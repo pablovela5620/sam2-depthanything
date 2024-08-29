@@ -1,0 +1,89 @@
+[project]
+name = "sam2-depthanything"
+version = "0.1.0"
+description = "Add a short description here"
+authors = [{ name = "Pablo Vela", email = "pablovela5620@gmail.com" }]
+requires-python = ">= 3.10"
+dependencies = [
+    "mmcv-lite>=2.2.0,<2.3",
+    "gradio-rerun==0.0.4",
+    "build>=1.2.1,<2",
+    "monopriors>=0.1.0,<0.2",
+    "hf-transfer>=0.1.8,<0.2",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sam2_depthanything*"]
+
+[tool.pixi.project]
+channels = ["nvidia", "nvidia/label/cuda-11.8.0", "conda-forge", "pytorch"]
+conda-pypi-map = { "pytorch" = "torch_mapping.json" }
+platforms = ["linux-64"]
+
+[tool.pixi.system-requirements]
+libc = { family = "glibc", version = "2.31" }
+
+[tool.pixi.activation]
+scripts = [".pixi.sh"]
+
+
+[tool.pixi.tasks]
+_install-wheel = "uv pip install ./$WHL_PATH --force-reinstall"
+_build-wheel = "python -m build"
+upload-hf = { cmd = "python tools/upload_to_hf.py", depends_on = [
+    "_build-wheel",
+] }
+
+[tool.pixi.tasks.app]
+cmd = """
+    python tools/gradio_app.py
+    """
+description = "Runs Gradio frontend"
+
+[tool.pixi.tasks.dev-app]
+cmd = """
+    gradio tools/gradio_app.py
+    """
+description = "Runs Gradio frontend for hotreload"
+
+[tool.pixi.feature.spaces.tasks.app]
+cmd = """
+    python gradio_app.py
+    """
+description = "Runs Gradio frontend for depth comparison"
+depends_on = ["_install-wheel"]
+
+[tool.pixi.pypi-dependencies]
+sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", rev = "0db838b11726893f151fa5826ecfa744e1a7760f", extras = [
+    "demo",
+] }
+sam2_depthanything = { path = ".", editable = true }
+
+[tool.pixi.dependencies]
+python = "3.11.*"
+pytorch = { version = "2.3.1", channel = "pytorch" }
+torchvision = { version = "0.18.1", channel = "pytorch" }
+cuda = { version = "*", channel = "nvidia/label/cuda-11.8.0" }
+pytorch-cuda = { version = "11.8.*", channel = "pytorch" }
+beartype = ">=0.18.5,<0.19"
+rerun-sdk = "==0.17.0"
+jaxtyping = ">=0.2.33,<0.3"
+uv = ">=0.3.4,<0.4"
+einops = ">=0.8.0,<0.9"
+transformers = ">=4.41.2,<5"
+
+[tool.pixi.feature.spaces.pypi-dependencies]
+spaces = "==0.29.3"
+
+
+[tool.pixi.environments]
+spaces = { features = ["spaces"], solve-group = "default" }
+
+[tool.ruff]
+ignore = [
+    "F722", # Forward annotation false positive from jaxtyping. Should be caught by pyright.
+]

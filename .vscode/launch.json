@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Gradio App",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/gradio_app.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+        }
+    ]
+}
