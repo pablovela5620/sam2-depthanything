@@ -6,9 +6,7 @@ authors = [{ name = "Pablo Vela", email = "pablovela5620@gmail.com" }]
 requires-python = ">= 3.10"
 dependencies = [
     "mmcv-lite>=2.2.0,<2.3",
-    "gradio-rerun==0.0.4",
     "build>=1.2.1,<2",
-    "monopriors>=0.1.0,<0.2",
     "hf-transfer>=0.1.8,<0.2",
 ]
 
@@ -20,12 +18,9 @@ build-backend = "setuptools.build_meta"
 include = ["sam2_depthanything*"]
 
 [tool.pixi.project]
-channels = ["nvidia", "nvidia/label/cuda-11.8.0", "conda-forge", "pytorch"]
-conda-pypi-map = { "pytorch" = "torch_mapping.json" }
+channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-[tool.pixi.system-requirements]
-libc = { family = "glibc", version = "2.31" }
 
 [tool.pixi.activation]
 scripts = [".pixi.sh"]
@@ -34,7 +29,7 @@ scripts = [".pixi.sh"]
 [tool.pixi.tasks]
 _install-wheel = "uv pip install ./$WHL_PATH --force-reinstall"
 _build-wheel = "python -m build"
-upload-hf = { cmd = "python tools/upload_to_hf.py", depends_on = [
+upload-hf = { cmd = "python tools/upload_to_hf.py", depends-on = [
     "_build-wheel",
 ] }
 
@@ -55,26 +50,30 @@ cmd = """
     python gradio_app.py
     """
 description = "Runs Gradio frontend for depth comparison"
-depends_on = ["_install-wheel"]
+depends-on = ["_install-wheel"]
 
 [tool.pixi.pypi-dependencies]
-sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", rev = "0db838b11726893f151fa5826ecfa744e1a7760f", extras = [
-    "demo",
-] }
 sam2_depthanything = { path = ".", editable = true }
+sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", rev = "2b90b9f5ceec907a1c18123530e92e794ad901a4" }
+torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
+torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu124" }
+xformers = { version = ">=0.0.29.post3", index = "https://download.pytorch.org/whl/cu124" }
+vggt = { git = "https://github.com/facebookresearch/vggt.git", rev = "f8bf73ac25d5089cca2d6540a185697087fa2255" }
+monopriors = { git = "https://github.com/pablovela5620/monoprior.git" }
+gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
+rerun-sdk = { path = "/home/pablo/0Dev/work/rerun-projects/rerun/dist/x86_64-unknown-linux-gnu/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_34_x86_64.whl" }
+
 
 [tool.pixi.dependencies]
 python = "3.11.*"
-pytorch = { version = "2.3.1", channel = "pytorch" }
-torchvision = { version = "0.18.1", channel = "pytorch" }
-cuda = { version = "*", channel = "nvidia/label/cuda-11.8.0" }
-pytorch-cuda = { version = "11.8.*", channel = "pytorch" }
 beartype = ">=0.18.5,<0.19"
-rerun-sdk = "==0.17.0"
 jaxtyping = ">=0.2.33,<0.3"
 uv = ">=0.3.4,<0.4"
 einops = ">=0.8.0,<0.9"
-transformers = ">=4.41.2,<5"
+py-opencv = ">=4.11.0,<5"
+transformers = ">=4.50.0,<5"
+setuptools = ">=75.8.2,<76"
+numpy = "<2"
 
 [tool.pixi.feature.spaces.pypi-dependencies]
 spaces = "==0.29.3"

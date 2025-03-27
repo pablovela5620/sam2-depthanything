@@ -72,7 +72,7 @@ def _get_initial_mask(
     labels: np.ndarray = np.array(trackings_input_label_list, dtype=np.float32)
 
     parent_log_path = Path("world")
-    rr.log(f"{parent_log_path}", rr.ViewCoordinates.RDF, timeless=True)
+    rr.log(f"{parent_log_path}", rr.ViewCoordinates.RDF, static=True)
     rr.set_time_sequence("iteration", 0)
 
     blueprint = create_blueprint(parent_log_path)
@@ -95,9 +95,7 @@ def _get_initial_mask(
         )
 
         rgb = mmcv.imread(str(img_path), channel_order="rgb")
-        depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
-            rgb=rgb, K_33=None
-        )
+        depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(rgb=rgb, K_33=None)
         masks: Bool[np.ndarray, "1 h w"] = (masks[0] > 0.0).numpy(force=True)
         log_relative_pred(
             parent_log_path=parent_log_path,
@@ -154,7 +152,7 @@ def _propagate_mask(
     labels: np.ndarray = np.array(trackings_input_label_list, dtype=np.float32)
 
     parent_log_path = Path("world")
-    rr.log(f"{parent_log_path}", rr.ViewCoordinates.RDF, timeless=True)
+    rr.log(f"{parent_log_path}", rr.ViewCoordinates.RDF, staic=True)
     rr.set_time_sequence("iteration", 0)
 
     blueprint = create_blueprint(parent_log_path)
@@ -181,9 +179,7 @@ def _propagate_mask(
         ):
             rr.set_time_sequence("frame", frame_idx)
             rgb = mmcv.imread(str(frame_path), channel_order="rgb")
-            depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
-                rgb=rgb, K_33=None
-            )
+            depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(rgb=rgb, K_33=None)
             masks: Bool[np.ndarray, "1 h w"] = (masks[0] > 0.0).numpy(force=True)
             log_relative_pred(
                 parent_log_path=parent_log_path,
@@ -230,9 +226,7 @@ def get_point(
     print(f"TRACKING INPUT LABEL: {trackings_input_label_list}")
 
     # Open the image and get its dimensions
-    transparent_background: Image.Image = Image.open(input_first_frame_image).convert(
-        "RGBA"
-    )
+    transparent_background: Image.Image = Image.open(input_first_frame_image).convert("RGBA")
     w, h = transparent_background.size
 
     # Define the circle radius as a fraction of the smaller dimension
@@ -268,9 +262,7 @@ def clear_points(image):
     ]
 
 
-def rescale_img(
-    img_hw3: UInt8[np.ndarray, "h w 3"], max_dim: int
-) -> UInt8[np.ndarray, "..."]:
+def rescale_img(img_hw3: UInt8[np.ndarray, "h w 3"], max_dim: int) -> UInt8[np.ndarray, "..."]:
     # resize the image to have a max dim of 1024
     height, width, _ = img_hw3.shape
     current_dim = max(height, width)
