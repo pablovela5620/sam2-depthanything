@@ -6,29 +6,27 @@ except ImportError:
     print("Not running on Zero")
     IN_SPACES = False
 
-import gradio as gr
-from gradio_rerun import Rerun
+import tempfile
+from pathlib import Path
+from typing import Literal, no_type_check
 
 import cv2
-import rerun as rr
-from PIL import Image
-from typing import Literal, no_type_check
-import numpy as np
-
-from sam2_depthanything.op import log_relative_pred, create_blueprint
-
-from jaxtyping import UInt8, Float32, Bool
-import tempfile
+import gradio as gr
 import mmcv
-from mmcv.video import VideoReader
-from pathlib import Path
+import numpy as np
+import rerun as rr
 import torch
-from sam2.sam2_video_predictor import SAM2VideoPredictor
+from gradio_rerun import Rerun
+from jaxtyping import Bool, Float32, UInt8
+from mmcv.video import VideoReader
 from monopriors.relative_depth_models.depth_anything_v2 import (
     DepthAnythingV2Predictor,
     RelativeDepthPrediction,
 )
+from PIL import Image
+from sam2.sam2_video_predictor import SAM2VideoPredictor
 
+from sam2_depthanything.op import create_blueprint, log_relative_pred
 
 if gr.NO_RELOAD:
     DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")

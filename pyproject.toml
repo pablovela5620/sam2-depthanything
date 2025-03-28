@@ -57,23 +57,28 @@ sam2_depthanything = { path = ".", editable = true }
 sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", rev = "2b90b9f5ceec907a1c18123530e92e794ad901a4" }
 torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
 torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu124" }
+torchcodec = { version = ">=0.2.1", index = "https://download.pytorch.org/whl/cu124" }
 xformers = { version = ">=0.0.29.post3", index = "https://download.pytorch.org/whl/cu124" }
 vggt = { git = "https://github.com/facebookresearch/vggt.git", rev = "f8bf73ac25d5089cca2d6540a185697087fa2255" }
 monopriors = { git = "https://github.com/pablovela5620/monoprior.git" }
 gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
-rerun-sdk = { path = "/home/pablo/0Dev/work/rerun-projects/rerun/dist/x86_64-unknown-linux-gnu/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_34_x86_64.whl" }
+rerun-sdk = { url = "https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl" }
+# rerun-sdk = { path = "/tmp/.tmpRaxTUh/rerun_sdk-0.23.0a1+dev-cp38-abi3-linux_x86_64.whl" }
+simplecv = { git = "https://github.com/pablovela5620/simplecv.git", rev = "a279fb50e2e332cbf99fcb885c086b916bb3fd16" }
 
 
 [tool.pixi.dependencies]
 python = "3.11.*"
-beartype = ">=0.18.5,<0.19"
-jaxtyping = ">=0.2.33,<0.3"
 uv = ">=0.3.4,<0.4"
 einops = ">=0.8.0,<0.9"
 py-opencv = ">=4.11.0,<5"
 transformers = ">=4.50.0,<5"
 setuptools = ">=75.8.2,<76"
 numpy = "<2"
+ffmpeg = ">=7.1.1,<8"
+pyserde = ">=0.23.0,<0.24"
+jaxtyping = ">=0.2.36,<0.3"
+open3d = ">=0.19.0,<0.20"
 
 [tool.pixi.feature.spaces.pypi-dependencies]
 spaces = "==0.29.3"
@@ -82,7 +87,26 @@ spaces = "==0.29.3"
 [tool.pixi.environments]
 spaces = { features = ["spaces"], solve-group = "default" }
 
+
 [tool.ruff]
+line-length = 150
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
 ignore = [
+    "E501", # Line too long.
     "F722", # Forward annotation false positive from jaxtyping. Should be caught by pyright.
+    "F821", # Forward annotation false positive from jaxtyping. Should be caught by pyright.
 ]
