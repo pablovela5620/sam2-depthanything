@@ -58,9 +58,9 @@ sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", re
 torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
 torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu124" }
 torchcodec = { version = ">=0.2.1", index = "https://download.pytorch.org/whl/cu124" }
-xformers = { version = ">=0.0.29.post3", index = "https://download.pytorch.org/whl/cu124" }
+xformers = { version = "==0.0.28.post3", index = "https://download.pytorch.org/whl/cu124" }
 vggt = { git = "https://github.com/facebookresearch/vggt.git", rev = "f8bf73ac25d5089cca2d6540a185697087fa2255" }
-monopriors = { git = "https://github.com/pablovela5620/monoprior.git" }
+monopriors = { git = "https://github.com/pablovela5620/monoprior.git", rev = "90fe03ab3a4ee1b8df542d5b8638bf034d933757" }
 gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
 rerun-sdk = { url = "https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl" }
 # rerun-sdk = { path = "/tmp/.tmpRaxTUh/rerun_sdk-0.23.0a1+dev-cp38-abi3-linux_x86_64.whl" }
@@ -79,6 +79,7 @@ ffmpeg = ">=7.1.1,<8"
 pyserde = ">=0.23.0,<0.24"
 jaxtyping = ">=0.2.36,<0.3"
 open3d = ">=0.19.0,<0.20"
+easydict = ">=1.13,<2"
 
 [tool.pixi.feature.spaces.pypi-dependencies]
 spaces = "==0.29.3"

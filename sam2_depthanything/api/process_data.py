@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from timeit import default_timer as timer
-from typing import Literal
+from typing import Literal, TypedDict
 
 import cv2
 import numpy as np
@@ -10,11 +10,13 @@ import rerun as rr
 import torch
 from einops import rearrange
 from jaxtyping import Bool, Float32, UInt8, UInt16
-from monopriors.depth_utils import clip_disparity, depth_edges_mask, depth_to_points
+from monopriors.dc_utils import read_video_frames
+from monopriors.depth_utils import depth_edges_mask
 from monopriors.relative_depth_models.depth_anything_v2 import (
     DepthAnythingV2Predictor,
     RelativeDepthPrediction,
 )
+from monopriors.relative_depth_models.video_depth_anything import VideoDepthAnythingPredictor
 from numpy import ndarray
 from serde import from_dict
 from serde.json import to_json
@@ -27,9 +29,7 @@ from vggt.models.vggt import VGGT
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-from sam2_depthanything.op import log_relative_pred
 from sam2_depthanything.vggt_utils import VGGTPredictions, create_blueprint, preprocess_images
-from typing import TypedDict
 
 
 @dataclass
@@ -231,7 +231,7 @@ def save_caliberation_data(data_dir: Path, sequence_name: str, calibration_data:
 
 def process_data(config: ProcessConfig):
     parent_log_path: Path = Path("world")
-    video_paths = sorted(config.video_dir.glob("*.mp4"))  # [2:6]
+    video_paths = sorted(config.video_dir.glob("*.mp4"))
     assert len(video_paths) > 0, f"No videos found in {config.video_dir}"
 
     mv_reader = MultiVideoReader(video_paths=video_paths)
@@ -317,53 +317,116 @@ def process_data(config: ProcessConfig):
     torch.cuda.empty_cache()
     del vggt_model
 
-    DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
-    DEPTH_PREDICTOR.set_model_device("cuda")
+    model: Literal["da2", "vda"] = "da2"
 
-    # Define a typed dictionary for camera scale and shift
-    class CameraScaleShift(TypedDict):
-        scale: float
-        shift: float
+    start = timer()
+    print("Generating Depth Maps...")
+    if model == "da2":
+        DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
+        DEPTH_PREDICTOR.set_model_device("cuda")
 
-    # Store scale and shift for each camera
-    camera_scale_shift: dict[int, CameraScaleShift] = {}
+        # Define a typed dictionary for camera scale and shift
+        class CameraScaleShift(TypedDict):
+            scale: float
+            shift: float
 
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, bgr_list in tqdm(enumerate(mv_reader), desc="Processing frames", total=len(mv_reader)):
-        rr.set_time_sequence("frame", frame_idx)
-        rgb_list: list[UInt8[ndarray, "H W 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
+        # Store scale and shift for each camera
+        camera_scale_shift: dict[int, CameraScaleShift] = {}
 
-        for cam_idx, (rgb, calib_data) in enumerate(zip(rgb_list, calibration_data, strict=True)):
-            cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
-            pinhole_param: PinholeParameters = calib_data.pinhole_param
-            depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
-                rgb=rgb, K_33=pinhole_param.intrinsics.k_matrix.astype(np.float32)
-            )
+        # propagate the prompts to get masklets throughout the video
+        for frame_idx, bgr_list in tqdm(enumerate(mv_reader), desc="Processing frames", total=len(mv_reader)):
+            rr.set_time_sequence("frame", frame_idx)
+            rgb_list: list[UInt8[ndarray, "H W 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
 
-            mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
-            mask = calib_data.confidence_mask.astype(np.bool_)
-            sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
-
-            # Calculate scale and shift only on the first frame
-            if frame_idx == 0:
-                scale, shift = compute_scale_and_shift_full(
-                    prediction=mono_disparity.astype(np.float32),
-                    target=sparse_depth,
-                    mask=mask,
+            for cam_idx, (rgb, calib_data) in enumerate(zip(rgb_list, calibration_data, strict=True)):
+                cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
+                pinhole_param: PinholeParameters = calib_data.pinhole_param
+                depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
+                    rgb=rgb, K_33=pinhole_param.intrinsics.k_matrix.astype(np.float32)
                 )
-                camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
-            else:
-                # Reuse scale and shift from first frame
-                scale: float = camera_scale_shift[cam_idx]["scale"]
-                shift: float = camera_scale_shift[cam_idx]["shift"]
 
-            aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
-            aligned_depth[aligned_depth < 0] = 0
-            # mask out the pixels that are not in the original depth map
-            aligned_depth[aligned_depth > np.max(sparse_depth)] = 0  # Clip values above max sparse depth
+                mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
+                mask = calib_data.confidence_mask.astype(np.bool_)
+                sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
 
-            edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(aligned_depth, threshold=0.01)
-            aligned_depth: Float32[np.ndarray, "h w"] = aligned_depth * ~edges_mask
+                # Calculate scale and shift only on the first frame
+                if frame_idx == 0:
+                    scale, shift = compute_scale_and_shift_full(
+                        prediction=mono_disparity.astype(np.float32),
+                        target=sparse_depth,
+                        mask=mask,
+                    )
+                    camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
+                else:
+                    # Reuse scale and shift from first frame
+                    scale: float = camera_scale_shift[cam_idx]["scale"]
+                    shift: float = camera_scale_shift[cam_idx]["shift"]
 
-            # log to cam_log_path to avoid backprojecting disparity
-            rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_depth))
+                aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
+                aligned_depth[aligned_depth < 0] = 0
+                # mask out the pixels that are not in the original depth map
+                aligned_depth[aligned_depth > np.max(sparse_depth)] = 0  # Clip values above max sparse depth
+
+                edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(aligned_depth, threshold=0.01)
+                aligned_depth: Float32[np.ndarray, "h w"] = aligned_depth * ~edges_mask
+
+                # log to cam_log_path to avoid backprojecting disparity
+                rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_depth))
+
+    elif model == "vda":
+        DEPTH_PREDICTOR = VideoDepthAnythingPredictor(device="cuda", encoder="vits")
+
+        # Define a typed dictionary for camera scale and shift
+        class CameraScaleShift(TypedDict):
+            scale: float
+            shift: float
+
+        # Store scale and shift for each camera
+        camera_scale_shift: dict[int, CameraScaleShift] = {}
+
+        # instead of iterating over the frames, we will iterate over the video reader
+        for cam_idx, (video_path, calib_data) in enumerate(
+            tqdm(
+                zip(mv_reader.video_paths, calibration_data, strict=True),
+                desc="Processing videos",
+                total=len(calibration_data),
+            )
+        ):
+            cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
+            read_output: tuple[UInt8[ndarray, "T H W 3"], float] = read_video_frames(
+                video_path, process_length=-1, target_fps=-1, max_res=-1
+            )
+            frames: UInt8[ndarray, "T H W 3"] = read_output[0]
+            depths: list[RelativeDepthPrediction] = DEPTH_PREDICTOR(
+                frames, K_33=calib_data.pinhole_param.intrinsics.k_matrix.astype(np.float32)
+            )
+            for frame_idx, depth_pred in enumerate(depths):
+                rr.set_time_sequence("frame", frame_idx)
+                mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
+                mask = calib_data.confidence_mask.astype(np.bool_)
+                sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
+
+                # Calculate scale and shift only on the first frame
+                if frame_idx == 0:
+                    scale, shift = compute_scale_and_shift_full(
+                        prediction=mono_disparity.astype(np.float32),
+                        target=sparse_depth,
+                        mask=mask,
+                    )
+                    camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
+                else:
+                    # Reuse scale and shift from first frame
+                    scale: float = camera_scale_shift[cam_idx]["scale"]
+                    shift: float = camera_scale_shift[cam_idx]["shift"]
+
+                aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
+                aligned_depth[aligned_depth < 0] = 0
+                # mask out the pixels that are not in the original depth map
+                aligned_depth[aligned_depth > np.max(sparse_depth)] = 0  # Clip values above max sparse depth
+
+                edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(aligned_depth, threshold=0.01)
+                aligned_depth: Float32[np.ndarray, "h w"] = aligned_depth * ~edges_mask
+
+                # log to cam_log_path to avoid backprojecting disparity
+                rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_depth))
+    print(f"Depth Maps from {model} generated in {timer() - start:.2f} seconds")
