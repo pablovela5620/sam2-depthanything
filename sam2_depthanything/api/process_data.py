@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from timeit import default_timer as timer
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, assert_never
 
 import cv2
 import numpy as np
@@ -17,6 +17,7 @@ from monopriors.relative_depth_models.depth_anything_v2 import (
     RelativeDepthPrediction,
 )
 from monopriors.relative_depth_models.video_depth_anything import VideoDepthAnythingPredictor
+from monopriors.scale_utils import compute_scale_and_shift
 from numpy import ndarray
 from serde import from_dict
 from serde.json import to_json
@@ -38,6 +39,11 @@ class ProcessConfig:
     video_dir: Path = Path("/mnt/12tbdrive/data/HO-cap/sample/subject_8/20231024_180733/raw_videos/")
     device: Literal["cpu", "cuda"] = "cuda"
     confidence_threshold: float = 50.0
+    depth_model: Literal["depthanythingv2", "videodepthanything"] = "videodepthanything"
+    max_video_len: int = -1
+    output_dir: Path = Path("data/example_data")
+    sequence_name: str = "0"
+    viz_depth_videos: bool = False
 
 
 @dataclass
@@ -48,33 +54,6 @@ class CalibrationData:
     confidence_mask: UInt8[ndarray, "H W"]
     pointcloud: o3d.geometry.PointCloud
     pinhole_param: PinholeParameters
-
-
-def compute_scale_and_shift_full(
-    prediction: Float32[ndarray, "H W"], target: Float32[ndarray, "H W"], mask: Bool[ndarray, "H W"]
-) -> tuple[float, float]:
-    # system matrix: A = [[a_00, a_01], [a_10, a_11]]
-    prediction = prediction.astype(np.float32)
-    target = target.astype(np.float32)
-    mask = mask.astype(np.float32)
-
-    a_00 = np.sum(mask * prediction * prediction)
-    a_01 = np.sum(mask * prediction)
-    a_11 = np.sum(mask)
-
-    b_0 = np.sum(mask * prediction * target)
-    b_1 = np.sum(mask * target)
-
-    x_0 = 1
-    x_1 = 0
-
-    det = a_00 * a_11 - a_01 * a_01
-
-    if det != 0:
-        x_0 = (a_11 * b_0 - a_01 * b_1) / det
-        x_1 = (-a_01 * b_0 + a_00 * b_1) / det
-
-    return float(x_0), float(x_1)
 
 
 def generate_camera_parameters(
@@ -122,7 +101,7 @@ def generate_camera_parameters(
     pcd = o3d.geometry.PointCloud()
 
     # Ensure your positions and colors are of the appropriate type (typically float64 for points)
-    pcd.points = o3d.utility.Vector3dVector(vertices_3d)
+    pcd.points = o3d.utility.Vector3dVector(vertices_3d * 1000)  # Scale to allow saving as uint16 later on
     pcd.colors = o3d.utility.Vector3dVector(colors_rgb)
 
     calib_data_list: list[CalibrationData] = []
@@ -149,7 +128,7 @@ def generate_camera_parameters(
         )
         extri_param = Extrinsics(
             cam_R_world=extri[:, :3],
-            cam_t_world=extri[:, 3],
+            cam_t_world=extri[:, 3] * 1000,  # to allow saving as uint16 later on
         )
         pinhole_param = PinholeParameters(name=cam_name, intrinsics=intri_param, extrinsics=extri_param)
         conf_threshold = 0.0 if confidence_threshold == 0.0 else np.percentile(depth_conf, confidence_threshold)
@@ -179,6 +158,7 @@ def generate_camera_parameters(
             target_width=original_img.shape[1],
             target_height=original_img.shape[0],
         )
+        # convert depth map to UInt16, this means we need to multiply by 1000 the point cloud, extrinsics, and depth map
         calib_data_list.append(
             CalibrationData(
                 cam_name=cam_name,
@@ -193,16 +173,12 @@ def generate_camera_parameters(
     return calib_data_list
 
 
-def save_caliberation_data(data_dir: Path, sequence_name: str, calibration_data: list[CalibrationData]):
-    sequence_dir: Path = data_dir / sequence_name
+def save_caliberation_data(save_dir: Path, sequence_name: str, calibration_data: list[CalibrationData]) -> Path:
+    sequence_dir: Path = save_dir / sequence_name
     sequence_dir.mkdir(parents=True, exist_ok=True)
     # Create directories for videos, depth maps, and confidence maps
     videos_dir = sequence_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
-    depth_dir = sequence_dir / "depths"
-    depth_dir.mkdir(parents=True, exist_ok=True)
-    conf_dir = sequence_dir / "confidences"
-    conf_dir.mkdir(parents=True, exist_ok=True)
 
     pinhole_parameters: list[PinholeParameters] = [calib_data.pinhole_param for calib_data in calibration_data]
     # Save camera parameters to a JSON file
@@ -216,17 +192,7 @@ def save_caliberation_data(data_dir: Path, sequence_name: str, calibration_data:
     point_cloud_path = sequence_dir / "point_cloud.ply"
     o3d.io.write_point_cloud(str(point_cloud_path), calibration_data[0].pointcloud)
 
-    for calib_data in tqdm(calibration_data, desc="Saving calibration data", unit="camera"):
-        cam_name: str = calib_data.cam_name
-        # Create camera specific directory
-        (depth_dir / cam_name).mkdir(parents=True, exist_ok=True)
-        depth_path = depth_dir / cam_name / "depth.png"
-        depth_map: UInt16[ndarray, "H W"] = calib_data.depth_map
-        # Save depth map as PNG
-        cv2.imwrite(str(depth_path), depth_map)
-        (conf_dir / cam_name).mkdir(parents=True, exist_ok=True)
-        conf_path = conf_dir / cam_name / "conf.jpg"
-        cv2.imwrite(str(conf_path), calib_data.confidence_mask.astype(np.uint8))
+    return sequence_dir
 
 
 def process_data(config: ProcessConfig):
@@ -283,18 +249,19 @@ def process_data(config: ProcessConfig):
             calibration_data[0].pointcloud.points,
             colors=calibration_data[0].pointcloud.colors,
         ),
+        static=True,
     )
     calib_data: CalibrationData
     for calib_data in calibration_data:
         cam_log_path: Path = parent_log_path / calib_data.cam_name
 
         mask: Float32[ndarray, "H W"] = calib_data.confidence_mask.astype(np.float32)
-        depth_map: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
+        depth_map: UInt16[ndarray, "H W"] = calib_data.depth_map
 
         log_pinhole(
             calib_data.pinhole_param,
             cam_log_path=cam_log_path,
-            image_plane_distance=0.1,
+            image_plane_distance=100.0,
             static=True,
         )
 
@@ -311,122 +278,213 @@ def process_data(config: ProcessConfig):
         )
 
     # save the calibration data
-    save_caliberation_data(data_dir=Path("data/example_data"), sequence_name="0", calibration_data=calibration_data)
-
+    sequence_dir: Path = save_caliberation_data(
+        save_dir=config.output_dir, sequence_name=config.sequence_name, calibration_data=calibration_data
+    )
     # Clean up
     torch.cuda.empty_cache()
     del vggt_model
 
-    model: Literal["da2", "vda"] = "da2"
-
     start = timer()
     print("Generating Depth Maps...")
-    if model == "da2":
-        DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
-        DEPTH_PREDICTOR.set_model_device("cuda")
+    aligned_depth_dict: dict[str, list[UInt16[np.ndarray, "H W"]]] = {}
+    final_masks_dict: dict[str, list[UInt8[np.ndarray, "H W"]]] = {}
+    match config.depth_model:
+        case "depthanythingv2":
+            DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
+            DEPTH_PREDICTOR.set_model_device("cuda")
 
-        # Define a typed dictionary for camera scale and shift
-        class CameraScaleShift(TypedDict):
-            scale: float
-            shift: float
+            # Define a typed dictionary for camera scale and shift
+            class CameraScaleShift(TypedDict):
+                scale: float
+                shift: float
 
-        # Store scale and shift for each camera
-        camera_scale_shift: dict[int, CameraScaleShift] = {}
+            # Store scale and shift for each camera
+            camera_scale_shift: dict[int, CameraScaleShift] = {}
 
-        # propagate the prompts to get masklets throughout the video
-        for frame_idx, bgr_list in tqdm(enumerate(mv_reader), desc="Processing frames", total=len(mv_reader)):
-            rr.set_time_sequence("frame", frame_idx)
-            rgb_list: list[UInt8[ndarray, "H W 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
-
-            for cam_idx, (rgb, calib_data) in enumerate(zip(rgb_list, calibration_data, strict=True)):
-                cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
-                pinhole_param: PinholeParameters = calib_data.pinhole_param
-                depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
-                    rgb=rgb, K_33=pinhole_param.intrinsics.k_matrix.astype(np.float32)
-                )
-
-                mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
-                mask = calib_data.confidence_mask.astype(np.bool_)
-                sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
-
-                # Calculate scale and shift only on the first frame
-                if frame_idx == 0:
-                    scale, shift = compute_scale_and_shift_full(
-                        prediction=mono_disparity.astype(np.float32),
-                        target=sparse_depth,
-                        mask=mask,
-                    )
-                    camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
-                else:
-                    # Reuse scale and shift from first frame
-                    scale: float = camera_scale_shift[cam_idx]["scale"]
-                    shift: float = camera_scale_shift[cam_idx]["shift"]
-
-                aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
-                aligned_depth[aligned_depth < 0] = 0
-                # mask out the pixels that are not in the original depth map
-                aligned_depth[aligned_depth > np.max(sparse_depth)] = 0  # Clip values above max sparse depth
-
-                edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(aligned_depth, threshold=0.01)
-                aligned_depth: Float32[np.ndarray, "h w"] = aligned_depth * ~edges_mask
-
-                # log to cam_log_path to avoid backprojecting disparity
-                rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_depth))
-
-    elif model == "vda":
-        DEPTH_PREDICTOR = VideoDepthAnythingPredictor(device="cuda", encoder="vits")
-
-        # Define a typed dictionary for camera scale and shift
-        class CameraScaleShift(TypedDict):
-            scale: float
-            shift: float
-
-        # Store scale and shift for each camera
-        camera_scale_shift: dict[int, CameraScaleShift] = {}
-
-        # instead of iterating over the frames, we will iterate over the video reader
-        for cam_idx, (video_path, calib_data) in enumerate(
-            tqdm(
-                zip(mv_reader.video_paths, calibration_data, strict=True),
-                desc="Processing videos",
-                total=len(calibration_data),
-            )
-        ):
-            cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
-            read_output: tuple[UInt8[ndarray, "T H W 3"], float] = read_video_frames(
-                video_path, process_length=-1, target_fps=-1, max_res=-1
-            )
-            frames: UInt8[ndarray, "T H W 3"] = read_output[0]
-            depths: list[RelativeDepthPrediction] = DEPTH_PREDICTOR(
-                frames, K_33=calib_data.pinhole_param.intrinsics.k_matrix.astype(np.float32)
-            )
-            for frame_idx, depth_pred in enumerate(depths):
+            # propagate the prompts to get masklets throughout the video
+            for frame_idx, bgr_list in tqdm(enumerate(mv_reader), desc="Processing frames", total=len(mv_reader)):
                 rr.set_time_sequence("frame", frame_idx)
-                mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
-                mask = calib_data.confidence_mask.astype(np.bool_)
-                sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map / 1000).astype(np.float32)
+                rgb_list: list[UInt8[ndarray, "H W 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
 
-                # Calculate scale and shift only on the first frame
-                if frame_idx == 0:
-                    scale, shift = compute_scale_and_shift_full(
-                        prediction=mono_disparity.astype(np.float32),
-                        target=sparse_depth,
-                        mask=mask,
+                for cam_idx, (rgb, calib_data) in enumerate(zip(rgb_list, calibration_data, strict=True)):
+                    cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
+                    pinhole_param: PinholeParameters = calib_data.pinhole_param
+                    depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(
+                        rgb=rgb, K_33=pinhole_param.intrinsics.k_matrix.astype(np.float32)
                     )
-                    camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
-                else:
-                    # Reuse scale and shift from first frame
-                    scale: float = camera_scale_shift[cam_idx]["scale"]
-                    shift: float = camera_scale_shift[cam_idx]["shift"]
 
-                aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
-                aligned_depth[aligned_depth < 0] = 0
-                # mask out the pixels that are not in the original depth map
-                aligned_depth[aligned_depth > np.max(sparse_depth)] = 0  # Clip values above max sparse depth
+                    mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
+                    mask = calib_data.confidence_mask.astype(np.bool_)
+                    sparse_depth: Float32[ndarray, "H W"] = (calib_data.depth_map).astype(np.float32)
 
-                edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(aligned_depth, threshold=0.01)
-                aligned_depth: Float32[np.ndarray, "h w"] = aligned_depth * ~edges_mask
+                    # Calculate scale and shift only on the first frame
+                    if frame_idx == 0:
+                        scale, shift = compute_scale_and_shift(
+                            prediction=mono_disparity.astype(np.float32),
+                            target=sparse_depth,
+                            mask=mask,
+                        )
+                        camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
+                    else:
+                        # Reuse scale and shift from first frame
+                        scale: float = camera_scale_shift[cam_idx]["scale"]
+                        shift: float = camera_scale_shift[cam_idx]["shift"]
 
-                # log to cam_log_path to avoid backprojecting disparity
-                rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_depth))
-    print(f"Depth Maps from {model} generated in {timer() - start:.2f} seconds")
+                    # Calculate aligned depth
+                    aligned_depth: Float32[np.ndarray, "h w"] = mono_disparity.astype(np.float32) * scale + shift
+
+                    # Create a comprehensive mask combining all filtering conditions
+                    final_mask = np.ones_like(aligned_depth, dtype=bool)
+
+                    # Filter negative values
+                    final_mask &= aligned_depth >= 0
+
+                    # Filter values above max sparse depth
+                    final_mask &= aligned_depth <= np.max(sparse_depth)
+
+                    # Filter depth edges
+                    edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(
+                        aligned_depth, threshold=0.01 * 1000
+                    )  # due to uint16 1000x scale up
+                    final_mask &= ~edges_mask
+
+                    # Apply the final mask
+                    # Create a copy to avoid modifying the original aligned depth
+                    aligned_masked_depth = aligned_depth.copy()
+                    # Apply the final mask to the copy
+                    aligned_masked_depth[~final_mask] = 0
+
+                    # log to cam_log_path to avoid backprojecting disparity
+                    if config.viz_depth_videos:
+                        rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_masked_depth))
+
+        case "videodepthanything":
+            DEPTH_PREDICTOR = VideoDepthAnythingPredictor(device="cuda", encoder="vits")
+
+            # Define a typed dictionary for camera scale and shift
+            class CameraScaleShift(TypedDict):
+                scale: float
+                shift: float
+
+            # Store scale and shift for each camera
+            camera_scale_shift: dict[int, CameraScaleShift] = {}
+            # instead of iterating over the frames, we will iterate over the video reader
+            for cam_idx, (video_path, calib_data) in enumerate(
+                tqdm(
+                    zip(mv_reader.video_paths, calibration_data, strict=True),
+                    desc="Processing videos",
+                    total=len(calibration_data),
+                )
+            ):
+                cam_log_path: Path = parent_log_path / calib_data.cam_name / "pinhole"
+                read_output: tuple[UInt8[ndarray, "T H W 3"], float] = read_video_frames(
+                    video_path, process_length=config.max_video_len, target_fps=-1, max_res=-1
+                )
+                frames: UInt8[ndarray, "T H W 3"] = read_output[0]
+                depths: list[RelativeDepthPrediction] = DEPTH_PREDICTOR(
+                    frames, K_33=calib_data.pinhole_param.intrinsics.k_matrix.astype(np.float32)
+                )
+                aligned_depths_list: list[UInt16[np.ndarray, "H W"]] = []
+                final_masks_list: list[UInt8[np.ndarray, "H W"]] = []
+                for frame_idx, depth_pred in enumerate(depths):
+                    rr.set_time_sequence("frame", frame_idx)
+                    mono_disparity: Float32[np.ndarray, "h w"] = depth_pred.depth
+                    confidence_mask = calib_data.confidence_mask.astype(np.bool_)
+                    sparse_depth: Float32[ndarray, "H W"] = calib_data.depth_map.astype(np.float32)
+
+                    # Calculate scale and shift only on the first frame
+                    if frame_idx == 0:
+                        scale, shift = compute_scale_and_shift(
+                            prediction=mono_disparity.astype(np.float32),
+                            target=sparse_depth,
+                            mask=confidence_mask,
+                        )
+                        camera_scale_shift[cam_idx] = {"scale": scale, "shift": shift}
+                    else:
+                        # Reuse scale and shift from first frame
+                        scale: float = camera_scale_shift[cam_idx]["scale"]
+                        shift: float = camera_scale_shift[cam_idx]["shift"]
+
+                    # Calculate aligned depth
+                    aligned_depth: Float32[np.ndarray, "h w"] = (mono_disparity * scale + shift).astype(np.float32)
+
+                    # Create a comprehensive mask combining all filtering conditions
+                    final_mask = np.ones_like(aligned_depth, dtype=bool)
+
+                    # Filter negative values
+                    final_mask &= aligned_depth >= 0
+
+                    # Filter values above max sparse depth
+                    final_mask &= aligned_depth <= np.max(sparse_depth)
+
+                    # Filter depth edges
+                    edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(
+                        aligned_depth, threshold=0.01 * 1000
+                    )  # due to uint16 1000x scale up
+                    final_mask &= ~edges_mask
+
+                    # convert to UInt8
+                    save_mask: UInt8[ndarray, "h w"] = (final_mask.copy() * 255).astype(np.uint8)
+                    final_masks_list.append(save_mask)
+                    aligned_depths_list.append(aligned_depth)
+
+                    # Apply the final mask
+                    # Create a copy to avoid modifying the original aligned depth
+                    aligned_masked_depth = aligned_depth.copy()
+                    # Apply the final mask to the copy
+                    aligned_masked_depth[~final_mask] = 0
+
+                    # log to cam_log_path to avoid backprojecting disparity
+                    if config.viz_depth_videos:
+                        rr.log(f"{cam_log_path}/aligned_depth", rr.DepthImage(aligned_masked_depth))
+                # add to dict
+                aligned_depth_dict[calib_data.cam_name] = aligned_depths_list
+                final_masks_dict[calib_data.cam_name] = final_masks_list
+        case _:
+            assert_never(config.depth_model)
+
+    assert len(aligned_depths_list) != 0, "No depth maps generated"
+    # Save the aligned depth maps and confidence masks
+    depth_dir: Path = sequence_dir / "aligned_depths"
+    depth_dir.mkdir(parents=True, exist_ok=True)
+    conf_dir: Path = sequence_dir / "confidence_masks"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    # Add tqdm progress bars for saving files
+    for cam_name, aligned_depths_list in tqdm(
+        aligned_depth_dict.items(), desc="Saving depth maps by camera", total=len(aligned_depth_dict)
+    ):
+        # Create camera specific directory
+        (depth_dir / cam_name).mkdir(parents=True, exist_ok=True)
+        for idx, depth in tqdm(
+            enumerate(aligned_depths_list),
+            desc=f"Saving depths for {cam_name}",
+            total=len(aligned_depths_list),
+            leave=False,
+        ):
+            # Convert to UInt16
+            depth_path = depth_dir / cam_name / f"depth_{idx:06d}.png"
+            # Save depth map as PNG
+            cv2.imwrite(str(depth_path), depth.astype(np.uint16))
+            # # eventually save as tiff when rerun supports it
+            # depth_map_tiff_path = depth_dir / cam_name / "depth.tiff"
+            # cv2.imwrite(str(depth_map_tiff_path), aligned_depths[0], [cv2.IMWRITE_TIFF_COMPRESSION, 8])
+    for cam_name, final_masks_list in tqdm(
+        final_masks_dict.items(), desc="Saving confidence masks by camera", total=len(final_masks_dict)
+    ):
+        # Create camera specific directory
+        (conf_dir / cam_name).mkdir(parents=True, exist_ok=True)
+        for idx, final_mask in tqdm(
+            enumerate(final_masks_list),
+            desc=f"Saving masks for {cam_name}",
+            total=len(final_masks_list),
+            leave=False,
+        ):
+            # Convert to UInt16
+            mask_path = conf_dir / cam_name / f"conf_{idx:06d}.png"
+            # Save depth map as PNG
+            cv2.imwrite(
+                str(mask_path),
+                final_mask,
+            )
+    print(f"Depth Maps from {config.depth_model} generated in {timer() - start:.2f} seconds")
