@@ -5725,7 +5725,7 @@ packages:
 - pypi: .
   name: sam2-depthanything
   version: 0.1.0
-  sha256: 9fbb4350f9bbd6817bbf09d5e7264cdb1164174b32eb6b71cf6b141a9d7078d8
+  sha256: d988935ba0d4f3fc2b6d4f2ca3924eea0f8fb89ef851e1531b02daf250a976e7
   requires_dist:
   - mmcv-lite>=2.2.0,<2.3
   - build>=1.2.1,<2
