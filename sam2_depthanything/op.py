@@ -85,8 +85,7 @@ def create_blueprint(parent_log_path: Path) -> rrb.Blueprint:
     cam_log_path: Path = parent_log_path / "camera"
     pinhole_path: Path = cam_log_path / "pinhole"
 
-    contents = [
-        rrb.Spatial3DView(origin=f"{parent_log_path}"),
+    contents: list = [
         rrb.Vertical(
             rrb.Spatial2DView(
                 origin=f"{pinhole_path}/image",
@@ -98,9 +97,10 @@ def create_blueprint(parent_log_path: Path) -> rrb.Blueprint:
                 origin=f"{cam_log_path}/disparity",
             ),
         ),
+        rrb.Spatial3DView(origin=f"{parent_log_path}"),
     ]
     blueprint = rrb.Blueprint(
-        rrb.Horizontal(contents=contents, column_shares=[3, 1]),
+        rrb.Horizontal(contents=contents, column_shares=[1, 3]),
         collapse_panels=True,
     )
     return blueprint
