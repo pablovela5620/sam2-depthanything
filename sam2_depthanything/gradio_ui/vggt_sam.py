@@ -24,15 +24,13 @@ from gradio_rerun import Rerun
 from gradio_rerun.events import (
     SelectionChange,
 )
-from jaxtyping import Bool, Float, Float32, Int, UInt8, UInt16
+from jaxtyping import Bool, Float, Float32, UInt8
 from monopriors.depth_utils import clip_disparity, depth_edges_mask, depth_to_points
 from monopriors.relative_depth_models.depth_anything_v2 import (
     DepthAnythingV2Predictor,
     RelativeDepthPrediction,
 )
-from numpy import ndarray
 from sam2.sam2_video_predictor import SAM2VideoPredictor
-from simplecv.camera_parameters import PinholeParameters
 from simplecv.video_io import VideoReader
 
 from sam2_depthanything.op import create_blueprint
@@ -475,84 +473,83 @@ def propagate_mask(
 
 
 with gr.Blocks() as vggt_block:
-    with gr.Tab("Monocular"):
-        keypoints = gr.State(KeypointsContainer.empty())
-        inference_state = gr.State({})
-        frames_dir = gr.State(Path())
-        with gr.Row():
-            with gr.Column(scale=1):
-                with gr.Accordion("Your video IN", open=True) as video_in_drawer:
-                    video_in = gr.Video(label="Video IN", format=None)
+    keypoints = gr.State(KeypointsContainer.empty())
+    inference_state = gr.State({})
+    frames_dir = gr.State(Path())
+    with gr.Row():
+        with gr.Column(scale=1):
+            with gr.Accordion("Your video IN", open=True) as video_in_drawer:
+                video_in = gr.Video(label="Video IN", format=None)
 
-                point_type = gr.Radio(
-                    label="point type",
-                    choices=["include", "exclude"],
-                    value="include",
-                    scale=1,
-                )
-                clear_points_btn = gr.Button("Clear Points", scale=1)
-                get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
-                propagate_mask_btn = gr.Button("Propagate Mask", scale=1)
-                stop_propagation_btn = gr.Button("Stop Propagation", scale=1)
+            point_type = gr.Radio(
+                label="point type",
+                choices=["include", "exclude"],
+                value="include",
+                scale=1,
+            )
+            clear_points_btn = gr.Button("Clear Points", scale=1)
+            get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
+            propagate_mask_btn = gr.Button("Propagate Mask", scale=1)
+            stop_propagation_btn = gr.Button("Stop Propagation", scale=1)
 
-            with gr.Column(scale=4):
-                viewer = Rerun(
-                    streaming=True,
-                    panel_states={
-                        "time": "collapsed",
-                        "blueprint": "hidden",
-                        "selection": "hidden",
-                    },
-                    height=700,
-                )
+        with gr.Column(scale=4):
+            viewer = Rerun(
+                streaming=True,
+                panel_states={
+                    "time": "collapsed",
+                    "blueprint": "hidden",
+                    "selection": "hidden",
+                },
+                height=700,
+            )
 
-        # We make a new recording id, and store it in a Gradio's session state.
-        recording_id = gr.State()
-        log_paths = gr.State({})
+    # We make a new recording id, and store it in a Gradio's session state.
+    recording_id = gr.State()
+    log_paths = gr.State({})
 
-        input_components = InputComponents(
-            video_file=video_in,
-        )
+    input_components = InputComponents(
+        video_file=video_in,
+    )
 
-        # triggered on video upload
-        video_in.upload(
-            fn=preprocess_video,
-            inputs=input_components.to_list(),
-            outputs=[video_in_drawer, viewer, inference_state, frames_dir, recording_id, log_paths],
-        )
+    # triggered on video upload
+    video_in.upload(
+        fn=preprocess_video,
+        inputs=input_components.to_list(),
+        outputs=[video_in_drawer, viewer, inference_state, frames_dir, recording_id, log_paths],
+    )
 
-        viewer.selection_change(
-            update_keypoints,
-            inputs=[
-                recording_id,
-                point_type,
-                keypoints,
-                log_paths,
-            ],
-            outputs=[viewer, keypoints],
-        )
+    viewer.selection_change(
+        update_keypoints,
+        inputs=[
+            recording_id,
+            point_type,
+            keypoints,
+            log_paths,
+        ],
+        outputs=[viewer, keypoints],
+    )
 
-        clear_points_btn.click(
-            fn=reset_keypoints,
-            inputs=[recording_id, keypoints, log_paths],
-            outputs=[viewer, keypoints],
-        )
+    clear_points_btn.click(
+        fn=reset_keypoints,
+        inputs=[recording_id, keypoints, log_paths],
+        outputs=[viewer, keypoints],
+    )
 
-        get_initial_mask_btn.click(
-            fn=get_initial_mask,
-            inputs=[recording_id, inference_state, keypoints, log_paths],
-            outputs=[viewer],
-        )
+    get_initial_mask_btn.click(
+        fn=get_initial_mask,
+        inputs=[recording_id, inference_state, keypoints, log_paths],
+        outputs=[viewer],
+    )
 
-        propagate_event = propagate_mask_btn.click(
-            fn=propagate_mask,
-            inputs=[recording_id, inference_state, keypoints, frames_dir, log_paths],
-            outputs=[viewer],
-        )
+    propagate_event = propagate_mask_btn.click(
+        fn=propagate_mask,
+        inputs=[recording_id, inference_state, keypoints, frames_dir, log_paths],
+        outputs=[viewer],
+    )
 
-        stop_propagation_btn.click(
-            fn=lambda: None,
-            inputs=[],
-            outputs=[],
-            cancels=[propagate_event],
-        )
+    stop_propagation_btn.click(
+        fn=lambda: None,
+        inputs=[],
+        outputs=[],
+        cancels=[propagate_event],
+    )

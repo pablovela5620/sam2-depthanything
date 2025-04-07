@@ -20,7 +20,8 @@ with gr.Blocks() as demo:
     gr.Markdown(title)
     gr.Markdown(description1)
     gr.Markdown(description2)
-    vggt_block.render()
+    with gr.Tab("Monocular"):
+        vggt_block.render()
 
 if __name__ == "__main__":
     demo.queue(max_size=2).launch()
