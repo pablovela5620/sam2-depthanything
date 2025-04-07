@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "rerun Docs": {
+            "type": "sse",
+            "url": "https://gitmcp.io/rerun-io/rerun"
+        }
+    }
+}

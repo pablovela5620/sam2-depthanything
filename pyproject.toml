@@ -25,6 +25,10 @@ platforms = ["linux-64"]
 [tool.pixi.activation]
 scripts = [".pixi.sh"]
 
+[tool.pixi.pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/nightly/cu128"]
+no-build-isolation = ["xformers"]
+
 
 [tool.pixi.tasks]
 _install-wheel = "uv pip install ./$WHL_PATH --force-reinstall"
@@ -45,20 +49,22 @@ cmd = """
     """
 description = "Runs Gradio frontend for hotreload"
 
-[tool.pixi.feature.spaces.tasks.app]
-cmd = """
-    python gradio_app.py
-    """
-description = "Runs Gradio frontend for depth comparison"
-depends-on = ["_install-wheel"]
+# [tool.pixi.feature.spaces.tasks.app]
+# cmd = """
+#     python gradio_app.py
+#     """
+# description = "Runs Gradio frontend for depth comparison"
+# depends-on = ["_install-wheel"]
 
 [tool.pixi.pypi-dependencies]
 sam2_depthanything = { path = ".", editable = true }
 sam-2 = { git = "https://github.com/facebookresearch/segment-anything-2.git", rev = "2b90b9f5ceec907a1c18123530e92e794ad901a4" }
-torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/cu124" }
-torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/cu124" }
-torchcodec = { version = ">=0.2.1", index = "https://download.pytorch.org/whl/cu124" }
-xformers = { version = "==0.0.28.post3", index = "https://download.pytorch.org/whl/cu124" }
+torch = { version = ">=2.5.1", index = "https://download.pytorch.org/whl/nightly/cu128" }
+torchvision = { version = ">=0.20.1", index = "https://download.pytorch.org/whl/nightly/cu128" }
+torchcodec = { version = ">=0.2.1", index = "https://download.pytorch.org/whl/nightly/cu128" }
+# xformers = { version = ">=0.0.28.post3", index = "https://download.pytorch.org/whl/nightly/cu128" }
+# cu128 version of xformers not yet available, needs to be built from source
+xformers = { git = "https://github.com/facebookresearch/xformers.git", rev = "main" }
 vggt = { git = "https://github.com/facebookresearch/vggt.git", rev = "f8bf73ac25d5089cca2d6540a185697087fa2255" }
 monopriors = { git = "https://github.com/pablovela5620/monoprior.git", rev = "90fe03ab3a4ee1b8df542d5b8638bf034d933757" }
 # gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
@@ -80,13 +86,17 @@ pyserde = ">=0.23.0,<0.24"
 jaxtyping = ">=0.2.36,<0.3"
 open3d = ">=0.19.0,<0.20"
 easydict = ">=1.13,<2"
+ninja = ">=1.12.1,<2"
+cuda = "12.8.*"
+cuda-nvcc = "12.8.*"
+cudnn = ">=9.8.0.87,<10"
 
-[tool.pixi.feature.spaces.pypi-dependencies]
-spaces = "==0.29.3"
+# [tool.pixi.feature.spaces.pypi-dependencies]
+# spaces = "==0.29.3"
 
 
-[tool.pixi.environments]
-spaces = { features = ["spaces"], solve-group = "default" }
+# [tool.pixi.environments]
+# spaces = { features = ["spaces"], solve-group = "default" }
 
 
 [tool.ruff]
