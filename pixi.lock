@@ -513,7 +513,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/e2/d1/a1d3189e7873408b9dc396aef0d7926c198b0df2aa3ddb5b539d3e89a70f/shtab-1.7.1-py3-none-any.whl
-      - pypi: git+https://github.com/pablovela5620/simplecv.git?rev=663a6a8882689cf70093cb16f717053731ca545e#663a6a8882689cf70093cb16f717053731ca545e
+      - pypi: git+https://github.com/pablovela5620/simplecv.git?rev=a726de3cdf251073fc1ea7515a0a6139474f486e#a726de3cdf251073fc1ea7515a0a6139474f486e
       - pypi: https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/4b/528ccf7a982216885a1ff4908e886b8fb5f19862d1962f56a3fce2435a70/starlette-0.46.1-py3-none-any.whl
       - pypi: https://download.pytorch.org/whl/nightly/sympy-1.13.3-py3-none-any.whl
@@ -6544,7 +6544,7 @@ packages:
 - pypi: .
   name: sam2-depthanything
   version: 0.1.0
-  sha256: 91aabb3dc319c822be6e544a7cbb328cfecbdb57f0a4a15353e2301f948c382b
+  sha256: 3c12a8859e2c9d8abd233bc7112245e61af3a4a52cb89d1b76f3f2953da57664
   requires_dist:
   - mmcv-lite>=2.2.0,<2.3
   - build>=1.2.1,<2
@@ -6636,7 +6636,7 @@ packages:
   - pytest-cov ; extra == 'dev'
   - pytest-timeout ; extra == 'dev'
   requires_python: '>=3.7'
-- pypi: git+https://github.com/pablovela5620/simplecv.git?rev=663a6a8882689cf70093cb16f717053731ca545e#663a6a8882689cf70093cb16f717053731ca545e
+- pypi: git+https://github.com/pablovela5620/simplecv.git?rev=a726de3cdf251073fc1ea7515a0a6139474f486e#a726de3cdf251073fc1ea7515a0a6139474f486e
   name: simplecv
   version: 0.3.1
   requires_dist:
@@ -6649,7 +6649,7 @@ packages:
   - pyserde>=0.20.0
   - rerun-sdk>=0.22.1
   - tyro>=0.9.1
-  - tqdm>=4.67
+  - tqdm
   - hf-transfer>=0.1.9
   requires_python: '>=3.11'
 - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhd8ed1ab_0.conda

@@ -39,15 +39,31 @@ upload-hf = { cmd = "python tools/upload_to_hf.py", depends-on = [
 
 [tool.pixi.tasks.app]
 cmd = """
-    python tools/gradio_app.py
+    python tools/gradio_app_multiview.py
     """
 description = "Runs Gradio frontend"
+depends-on = ["_download-hocap-sample"]
 
 [tool.pixi.tasks.dev-app]
 cmd = """
     gradio tools/gradio_app.py
     """
 description = "Runs Gradio frontend for hotreload"
+
+[tool.pixi.tasks._download-hocap-sample]
+cmd = """
+    test -e data/hocap/sample.zip \
+    && test -e data/hocap/sample \
+    || (
+        mkdir -p data/hocap/ \
+        && huggingface-cli download pablovela5620/hocap-sample \
+        sample.zip --repo-type dataset \
+        --local-dir data/hocap/ \
+        && unzip -o data/hocap/sample.zip -d data/hocap/
+    )
+    """
+outputs = ["data/hocap/sample.zip", "data/hocap/sample"]
+description = "Downloads and extracts an example polycam dataset from huggingface, this may take a while"
 
 # [tool.pixi.feature.spaces.tasks.app]
 # cmd = """
@@ -70,7 +86,7 @@ monopriors = { git = "https://github.com/pablovela5620/monoprior.git", rev = "90
 # gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
 gradio-rerun = { url = "https://huggingface.co/datasets/pablovela5620/gradio-rr-0.23/resolve/main/gradio_rerun-0.0.8-py3-none-any.whl" }
 rerun-sdk = { url = "https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl" }
-simplecv = { git = "https://github.com/pablovela5620/simplecv.git", rev = "663a6a8882689cf70093cb16f717053731ca545e" }
+simplecv = { git = "https://github.com/pablovela5620/simplecv.git", rev = "a726de3cdf251073fc1ea7515a0a6139474f486e" }
 
 
 [tool.pixi.dependencies]

@@ -59,7 +59,7 @@ def log_relative_pred(
             f"{pinhole_path}/segmentation",
             rr.SegmentationImage(seg_mask_hw),
         )
-        depth_hw: Float32[np.ndarray, "h w"] = depth_hw * seg_mask_hw
+        depth_hw: Float32[np.ndarray, "h w"] = depth_hw  # * seg_mask_hw
 
     rr.log(f"{pinhole_path}/depth", rr.DepthImage(depth_hw))
 
