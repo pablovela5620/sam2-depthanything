@@ -1,4 +1,3 @@
-import copy
 import tempfile
 import uuid
 from dataclasses import dataclass, fields
@@ -16,24 +15,60 @@ from gradio_rerun import Rerun
 from gradio_rerun.events import (
     SelectionChange,
 )
-from jaxtyping import Bool, Float, Float32, Int, UInt8
+from icecream import ic
+from jaxtyping import Bool, Float, Float32, Int, UInt8, UInt16
 from monopriors.depth_utils import clip_disparity, depth_edges_mask, depth_to_points
 from monopriors.relative_depth_models.depth_anything_v2 import (
     DepthAnythingV2Predictor,
-    RelativeDepthPrediction,
 )
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
-from simplecv.apis.view_exoego_data import create_blueprint as create_exoego_blueprint
 from simplecv.camera_parameters import PinholeParameters
-from simplecv.data.exoego.hocap import HOCapSequence
-from simplecv.video_io import MultiVideoReader, VideoReader
+from simplecv.data.exoego.hocap import ExoCameraIDs, HOCapSequence
+from simplecv.ops.triangulate import batch_triangulate, projectN3
+from simplecv.video_io import MultiVideoReader
 
-from sam2_depthanything.op import create_blueprint
+# from sam2_depthanything.op import create_blueprint
 
 if gr.NO_RELOAD:
     VIDEO_SAM_PREDICTOR: SAM2VideoPredictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-tiny")
+    IMG_SAM_PREDICTOR: SAM2ImagePredictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-tiny")
     DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
     DEPTH_PREDICTOR.set_model_device("cuda")
+
+
+def create_blueprint(exo_video_log_paths: list[Path], num_videos_to_log: Literal[4, 8] = 8) -> rrb.Blueprint:
+    main_view = rrb.Horizontal(
+        contents=[
+            rrb.Vertical(
+                contents=[
+                    rrb.Horizontal(
+                        contents=[
+                            rrb.Spatial2DView(origin=f"{video_log_path.parent}"),
+                            # rrb.Spatial2DView(origin=f"{video_log_path}".replace("video", "depth")),
+                        ]
+                    )
+                    for video_log_path in exo_video_log_paths
+                ]
+            ),
+            rrb.Spatial3DView(
+                origin="/",
+            ),
+            # take the first 4 video files
+        ],
+        column_shares=[2, 5],
+    )
+    # do the last 4 videos
+    contents = [main_view]
+
+    blueprint = rrb.Blueprint(
+        rrb.Horizontal(
+            contents=contents,
+            column_shares=[4, 1],
+        ),
+        collapse_panels=True,
+    )
+    return blueprint
 
 
 class RerunLogPaths(TypedDict):
@@ -151,91 +186,6 @@ def log_video_rec(
     return frame_timestamps_ns
 
 
-def log_relative_pred_rec(
-    rec: rr.RecordingStream,
-    parent_log_path: Path,
-    relative_pred: RelativeDepthPrediction,
-    rgb_hw3: UInt8[np.ndarray, "h w 3"],
-    seg_mask_hw: UInt8[np.ndarray, "h w"] | None = None,
-    remove_flying_pixels: bool = True,
-    jpeg_quality: int = 90,
-    depth_edge_threshold: float = 1.1,
-) -> None:
-    cam_log_path: Path = parent_log_path / "camera"
-    pinhole_path: Path = cam_log_path / "pinhole"
-
-    # assume camera is at the origin
-    cam_T_world_44: Float[np.ndarray, "4 4"] = np.eye(4)
-
-    rec.log(
-        f"{cam_log_path}",
-        rr.Transform3D(
-            translation=cam_T_world_44[:3, 3],
-            mat3x3=cam_T_world_44[:3, :3],
-            from_parent=True,
-        ),
-    )
-    rec.log(
-        f"{pinhole_path}",
-        rr.Pinhole(
-            image_from_camera=relative_pred.K_33,
-            width=rgb_hw3.shape[1],
-            height=rgb_hw3.shape[0],
-            image_plane_distance=1.5,
-            camera_xyz=rr.ViewCoordinates.RDF,
-        ),
-    )
-    rec.log(f"{pinhole_path}/image", rr.Image(rgb_hw3).compress(jpeg_quality=jpeg_quality))
-
-    depth_hw: Float32[np.ndarray, "h w"] = relative_pred.depth
-    disparity = relative_pred.disparity
-    # removes outliers from disparity (sometimes we can get weirdly large values)
-    clipped_disparity: UInt8[np.ndarray, "h w"] = clip_disparity(disparity)
-    if remove_flying_pixels:
-        edges_mask: Bool[np.ndarray, "h w"] = depth_edges_mask(depth_hw, threshold=depth_edge_threshold)
-        rec.log(
-            f"{pinhole_path}/edge_mask",
-            rr.SegmentationImage(edges_mask.astype(np.uint8)),
-        )
-        depth_hw: Float32[np.ndarray, "h w"] = depth_hw * ~edges_mask
-        clipped_disparity: Float32[np.ndarray, "h w"] = clipped_disparity * ~edges_mask
-
-    if seg_mask_hw is not None:
-        rec.log(
-            f"{pinhole_path}/segmentation",
-            rr.SegmentationImage(seg_mask_hw),
-        )
-        depth_hw: Float32[np.ndarray, "h w"] = depth_hw  # * seg_mask_hw
-        clipped_disparity: Float32[np.ndarray, "h w"] = clipped_disparity  # * seg_mask_hw
-
-    rec.log(f"{pinhole_path}/depth", rr.DepthImage(depth_hw))
-
-    # log to cam_log_path to avoid backprojecting disparity
-    rec.log(f"{cam_log_path}/disparity", rr.DepthImage(clipped_disparity))
-
-    depth_1hw: Float32[np.ndarray, "1 h w"] = rearrange(depth_hw, "h w -> 1 h w")
-    pts_3d: Float32[np.ndarray, "h w 3"] = depth_to_points(depth_1hw, relative_pred.K_33)
-
-    colors = rgb_hw3.reshape(-1, 3)
-
-    # If we have a segmentation mask, make those pixels blue
-    if seg_mask_hw is not None:
-        # Reshape the mask to match colors shape
-        flat_mask = seg_mask_hw.reshape(-1)
-
-        # Set pixels where mask == 1 to blue (BGR format)
-        # Blue: [255, 0, 0] in BGR or [0, 0, 255] in RGB
-        colors[flat_mask == 1, :] = [0, 0, 255]  # RGB format: Blue
-
-    rec.log(
-        f"{parent_log_path}/point_cloud",
-        rr.Points3D(
-            positions=pts_3d.reshape(-1, 3),
-            colors=colors,
-        ),
-    )
-
-
 # In this function, the `request` and `evt` parameters will be automatically injected by Gradio when this event listener is fired.
 #
 # `SelectionChange` is a subclass of `EventData`: https://www.gradio.app/docs/gradio/eventdata
@@ -243,7 +193,7 @@ def log_relative_pred_rec(
 def update_keypoints(
     active_recording_id: uuid.UUID,
     point_type: Literal["include", "exclude"],
-    keypoints_container: KeypointsContainer,
+    mv_keypoint_dict: dict[str, KeypointsContainer],
     log_paths: RerunLogPaths,
     request: gr.Request,
     evt: SelectionChange,
@@ -264,43 +214,35 @@ def update_keypoints(
     rec: rr.RecordingStream = get_recording(active_recording_id)
     stream: rr.BinaryStream = rec.binary_stream()
     current_keypoint: tuple[int, int] = item.position[0:2]
-    keypoints_container.add_point(current_keypoint, point_type)
+
+    for cam_name in mv_keypoint_dict:
+        if cam_name in item.entity_path:
+            # Update the keypoints for the specific camera
+            mv_keypoint_dict[cam_name].add_point(current_keypoint, point_type)
+            current_keypoint_container: KeypointsContainer = mv_keypoint_dict[cam_name]
 
     rec.set_time_nanos(log_paths["timeline_name"], nanos=0)
     # Log include points if any exist
-    if keypoints_container.include_points.shape[0] > 0:
+    if current_keypoint_container.include_points.shape[0] > 0:
         rec.log(
-            f"{item.entity_path}/include", rr.Points2D(keypoints_container.include_points, colors=(0, 255, 0), radii=5)
+            f"{item.entity_path}/include",
+            rr.Points2D(current_keypoint_container.include_points, colors=(0, 255, 0), radii=5),
         )
 
     # Log exclude points if any exist
-    if keypoints_container.exclude_points.shape[0] > 0:
+    if current_keypoint_container.exclude_points.shape[0] > 0:
         rec.log(
             f"{item.entity_path}/exclude",
-            rr.Points2D(keypoints_container.exclude_points, colors=(255, 0, 0), radii=5),
+            rr.Points2D(current_keypoint_container.exclude_points, colors=(255, 0, 0), radii=5),
         )
 
-    # Ensure we consume everything from the recording.
+    # # Ensure we consume everything from the recording.
     stream.flush()
-    yield stream.read(), keypoints_container
+    yield stream.read(), mv_keypoint_dict
 
 
 def get_recording(recording_id) -> rr.RecordingStream:
     return rr.RecordingStream(application_id="rerun_vggt_sam", recording_id=recording_id)
-
-
-# Allow using keyword args in gradio to avoid mixing up the order of inputs
-@dataclass
-class InputComponents:
-    video_file: gr.Video
-
-    def to_list(self) -> list:
-        return [getattr(self, f.name) for f in fields(self)]
-
-
-@dataclass
-class InputValues:
-    video_file: str
 
 
 def rescale_img(img_hw3: UInt8[np.ndarray, "h w 3"], max_dim: int) -> UInt8[np.ndarray, "... 3"]:
@@ -322,227 +264,204 @@ def rescale_img(img_hw3: UInt8[np.ndarray, "h w 3"], max_dim: int) -> UInt8[np.n
     return img_hw3
 
 
-def preprocess_video(
-    *input_params,
-    progress=gr.Progress(track_tqdm=True),  # noqa B008
+def reset_keypoints(
+    active_recording_id: uuid.UUID, mv_keypoint_dict: dict[str, KeypointsContainer], log_paths: RerunLogPaths
 ):
-    input_values = InputValues(*input_params)
-    # create a new recording id, and store it in a Gradio's session state.
-    recording_id: uuid.UUID = uuid.uuid4()
-    rec: rr.RecordingStream = get_recording(recording_id)
-    stream: rr.BinaryStream = rec.binary_stream()
-
-    log_paths = RerunLogPaths(
-        timeline_name="frame_idx",
-        parent_log_path=Path("world"),
-        camera_log_path=Path("world") / "camera",
-        pinhole_path=Path("world") / "camera" / "pinhole",
-    )
-
-    video_path: Path = Path(input_values.video_file)
-
-    initial_blueprint = rrb.Blueprint(
-        rrb.Horizontal(
-            rrb.Spatial2DView(origin=f"{log_paths['pinhole_path']}"),
-        ),
-        collapse_panels=True,
-    )
-
-    rec.send_blueprint(initial_blueprint)
-
-    video_reader: VideoReader = VideoReader(video_path)
-    tmp_frames_dir: str = tempfile.mkdtemp()
-
-    target_fps: int = 10
-    frame_interval: int = int(video_reader.fps // target_fps)
-    max_frames: int = 100
-    total_saved_frames: int = 0
-    max_size: int = 640
-
-    progress(0, desc="Reading video frames")
-    for idx, bgr in enumerate(video_reader):
-        if idx % frame_interval == 0:
-            if total_saved_frames >= max_frames:
-                break
-            bgr: np.ndarray = rescale_img(bgr, max_size)
-            # 3. Save frames to temporary directory
-            cv2.imwrite(f"{tmp_frames_dir}/{idx:05d}.jpg", bgr)
-            total_saved_frames += 1
-
-    first_frame_path: Path = Path(tmp_frames_dir) / "00000.jpg"
-    first_bgr: np.ndarray = cv2.imread(str(first_frame_path))
-
-    progress(0.5, desc="Initializing SAM")
-    with torch.inference_mode():
-        inference_state = VIDEO_SAM_PREDICTOR.init_state(video_path=tmp_frames_dir)
-        VIDEO_SAM_PREDICTOR.reset_state(inference_state)
-    print(type(inference_state))
-
-    rec.set_time_sequence(log_paths["timeline_name"], sequence=0)
-    rec.log(
-        f"{log_paths['pinhole_path']}/image",
-        rr.Image(first_bgr, color_model=rr.ColorModel.BGR).compress(jpeg_quality=90),
-    )
-
-    # Ensure we consume everything from the recording.
-    stream.flush()
-
-    yield gr.Accordion(open=False), stream.read(), inference_state, Path(tmp_frames_dir), recording_id, log_paths
-
-
-def reset_keypoints(active_recording_id: uuid.UUID, keypoints_container: KeypointsContainer, log_paths: RerunLogPaths):
     # Now we can produce a valid keypoint.
     rec: rr.RecordingStream = get_recording(active_recording_id)
     stream: rr.BinaryStream = rec.binary_stream()
 
-    keypoints_container.clear()
+    mv_keypoint_dict: dict[str, KeypointsContainer] = {
+        cam_name: KeypointsContainer.empty() for cam_name in mv_keypoint_dict
+    }
 
-    rec.set_time_sequence(log_paths["timeline_name"], sequence=0)
+    rec.set_time_nanos(log_paths["timeline_name"], nanos=0)
     # Log include points if any exist
-    # paths_to_clear = ["include", "exclude", "segmentation", "depth", "image"]
-    # for path in paths_to_clear:
-    #     rec.log(
-    #         f"{log_paths['pinhole_path']}/{path}",
-    #         rr.Clear(recursive=True),
-    #     )
-    rec.log(
-        f"{log_paths['pinhole_path']}/image/include",
-        rr.Clear(recursive=True),
-    )
-    rec.log(
-        f"{log_paths['pinhole_path']}/image/exclude",
-        rr.Clear(recursive=True),
-    )
-    rec.log(
-        f"{log_paths['pinhole_path']}/segmentation",
-        rr.Clear(recursive=True),
-    )
-    rec.log(
-        f"{log_paths['pinhole_path']}/depth",
-        rr.Clear(recursive=True),
-    )
+    for cam_log_path in log_paths["cam_log_path_list"]:
+        pinhole_path: Path = cam_log_path / "pinhole"
+        print(pinhole_path)
+        rec.log(
+            f"{pinhole_path}/video/include",
+            rr.Clear(recursive=True),
+        )
+        rec.log(
+            f"{pinhole_path}/video/exclude",
+            rr.Clear(recursive=True),
+        )
+        rec.log(
+            f"{pinhole_path}/video/bbox",
+            rr.Clear(recursive=True),
+        )
+        rec.log(
+            f"{pinhole_path}/video/bbox_center",
+            rr.Clear(recursive=True),
+        )
+        rec.log(
+            f"{pinhole_path}/segmentation",
+            rr.Clear(recursive=True),
+        )
+        rec.log(
+            f"{pinhole_path}/depth",
+            rr.Clear(recursive=True),
+        )
 
     # Ensure we consume everything from the recording.
     stream.flush()
-    yield stream.read(), keypoints_container
+    yield stream.read(), mv_keypoint_dict, {}
 
 
 def get_initial_mask(
     recording_id: uuid.UUID,
     inference_state: dict,
-    keypoint_container: KeypointsContainer,
+    mv_keypoints_dict: dict[str, KeypointsContainer],
     log_paths: RerunLogPaths,
+    rgb_list: list[UInt8[np.ndarray, "h w 3"]],
+    keypoint_centers_dict: dict[str, Float32[np.ndarray, "3"]],
 ):
     rec = get_recording(recording_id)
     stream = rec.binary_stream()
 
-    rec.set_time_sequence(log_paths["timeline_name"], 0)
+    rec.set_time_nanos(log_paths["timeline_name"], nanos=0)
 
-    points = np.vstack([keypoint_container.include_points, keypoint_container.exclude_points]).astype(np.float32)
-    if len(points) == 0:
-        raise gr.Error("No points selected. Please add include or exclude points.")
-
-    # Create labels array: 1 for include points, 0 for exclude points
-    labels = np.ones(len(keypoint_container.include_points), dtype=np.int32)
-    if len(keypoint_container.exclude_points) > 0:
-        labels = np.concatenate([labels, np.zeros(len(keypoint_container.exclude_points), dtype=np.int32)])
-
-    print(f"Points shape: {points.shape}")
-    print(f"Labels shape: {labels.shape}")
-    print(labels)
-    print(
-        f"Include points: {keypoint_container.include_points.shape}, Exclude points: {keypoint_container.exclude_points.shape}"
-    )
-
-    with torch.inference_mode():
-        frame_idx: int
-        object_ids: list
-        masks: Float32[torch.Tensor, "b 3 h w"]
-
-        frame_idx, object_ids, masks = VIDEO_SAM_PREDICTOR.add_new_points_or_box(
-            inference_state=inference_state,
-            frame_idx=0,
-            obj_id=0,
-            points=points,
-            labels=labels,
-        )
-
-        masks: Bool[np.ndarray, "1 h w"] = (masks[0] > 0.0).numpy(force=True)
-
-    rec.log(
-        f"{log_paths['pinhole_path']}/segmentation",
-        rr.SegmentationImage(masks[0].astype(np.uint8)),
-    )
-    yield stream.read()
-
-
-def propagate_mask(
-    recording_id: uuid.UUID,
-    inference_state: dict,
-    keypoint_container: KeypointsContainer,
-    frames_dir: Path,
-    log_paths: RerunLogPaths,
-):
-    rec = get_recording(recording_id)
-    stream = rec.binary_stream()
-
-    blueprint = create_blueprint(parent_log_path=log_paths["parent_log_path"])
-    rec.send_blueprint(blueprint)
-
-    rec.log(f"{log_paths['parent_log_path']}", rr.ViewCoordinates.RDF)
-
-    points = np.vstack([keypoint_container.include_points, keypoint_container.exclude_points]).astype(np.float32)
-    if len(points) == 0:
-        raise gr.Error("No points selected. Please add include or exclude points.")
-
-    # Create labels array: 1 for include points, 0 for exclude points
-    labels = np.ones(len(keypoint_container.include_points), dtype=np.int32)
-    if len(keypoint_container.exclude_points) > 0:
-        labels = np.concatenate([labels, np.zeros(len(keypoint_container.exclude_points), dtype=np.int32)])
-
-    frames_paths: list[Path] = sorted(frames_dir.glob("*.jpg"))
-
-    # remove the keypoints as they're in the way during propagation
-    rec.log(
-        f"{log_paths['pinhole_path']}/include",
-        rr.Clear(recursive=True),
-    )
-    rec.log(
-        f"{log_paths['pinhole_path']}/exclude",
-        rr.Clear(recursive=True),
-    )
-
-    with torch.inference_mode():
-        frame_idx: int
-        object_ids: list
-        masks: Float32[torch.Tensor, "b 3 h w"]
-
-        frame_idx, object_ids, masks = VIDEO_SAM_PREDICTOR.add_new_points_or_box(
-            inference_state, frame_idx=0, obj_id=0, points=points, labels=labels
-        )
-
-        # propagate the prompts to get masklets throughout the video
-        for frames_path, (frame_idx, object_ids, masks) in zip(
-            frames_paths, VIDEO_SAM_PREDICTOR.propagate_in_video(inference_state), strict=True
-        ):
-            rec.set_time_sequence(log_paths["timeline_name"], frame_idx)
-            masks: Bool[np.ndarray, "1 h w"] = (masks[0] > 0.0).numpy(force=True)
-            bgr = cv2.imread(str(frames_path))
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            depth_pred: RelativeDepthPrediction = DEPTH_PREDICTOR.__call__(rgb=rgb, K_33=None)
-
-            log_relative_pred_rec(
-                rec=rec,
-                parent_log_path=log_paths["parent_log_path"],
-                relative_pred=depth_pred,
-                rgb_hw3=rgb,
-                seg_mask_hw=masks[0].astype(np.uint8),
-                remove_flying_pixels=True,
-                jpeg_quality=90,
-                depth_edge_threshold=0.1,
+    for (cam_name, keypoint_container), rgb in zip(mv_keypoints_dict.items(), rgb_list, strict=True):
+        IMG_SAM_PREDICTOR.set_image(rgb)
+        pinhole_log_path: Path = log_paths["parent_log_path"] / cam_name / "pinhole"
+        points: Float32[np.ndarray, "num_points 2"] = np.vstack(
+            [keypoint_container.include_points, keypoint_container.exclude_points]
+        ).astype(np.float32)
+        if points.shape[0] == 0:
+            IMG_SAM_PREDICTOR.reset_predictor()
+            rec.log(
+                "logs",
+                rr.TextLog("No points selected, skipping segmentation.", level="info"),
             )
+        else:
+            # Create labels array: 1 for include points, 0 for exclude points
+            labels: Int[np.ndarray, "num_points"] = np.ones(len(keypoint_container.include_points), dtype=np.int32)
+            if len(keypoint_container.exclude_points) > 0:
+                labels = np.concatenate([labels, np.zeros(len(keypoint_container.exclude_points), dtype=np.int32)])
 
-            yield stream.read()
+            with torch.inference_mode():
+                masks, scores, _ = IMG_SAM_PREDICTOR.predict(
+                    point_coords=points,
+                    point_labels=labels,
+                    multimask_output=False,
+                )
+                masks: Bool[np.ndarray, "1 h w"] = masks > 0.0
+
+            rec.log(
+                f"{pinhole_log_path}/segmentation",
+                rr.SegmentationImage(masks[0].astype(np.uint8)),
+            )
+            # Convert the mask to a bounding box
+            if masks[0].any():
+                y_min, y_max = np.where(masks[0].any(axis=1))[0][[0, -1]]
+                x_min, x_max = np.where(masks[0].any(axis=0))[0][[0, -1]]
+                bbox = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
+                rec.log(
+                    f"{pinhole_log_path}/video/bbox",
+                    rr.Boxes2D(array=bbox, array_format=rr.Box2DFormat.XYXY, colors=(0, 0, 255)),
+                )
+
+                # Calculate the center of the bounding box
+                center_xyc: Float32[np.ndarray, "3"] = np.array(
+                    [(x_min + x_max) / 2, (y_min + y_max) / 2, 1], dtype=np.float32
+                )
+                rec.log(
+                    f"{pinhole_log_path}/video/bbox_center",
+                    rr.Points2D(positions=(center_xyc[0], center_xyc[1]), colors=(0, 0, 255), radii=5),
+                )
+                keypoint_centers_dict[cam_name] = center_xyc
+            IMG_SAM_PREDICTOR.reset_predictor()
+
+        ic(keypoint_centers_dict)
+        yield stream.read(), keypoint_centers_dict
+
+
+def triangulate_centers(
+    recording_id: uuid.UUID,
+    center_xyc_dict: dict[str, Float32[np.ndarray, "3"]],
+    exo_cam_list: list[PinholeParameters],
+    log_paths: RerunLogPaths,
+    rgb_list: list[UInt8[np.ndarray, "h w 3"]],
+):
+    rec = get_recording(recording_id)
+    stream = rec.binary_stream()
+
+    rec.set_time_nanos(log_paths["timeline_name"], nanos=0)
+    if len(center_xyc_dict) >= 2:
+        centers_xyc: Float32[np.ndarray, "num_views 3"] = np.stack(
+            [center_xyc for center_xyc in center_xyc_dict.values() if center_xyc is not None], axis=0
+        ).astype(np.float32)
+        centers_xyc = rearrange(centers_xyc, "num_views xyc -> num_views 1 xyc")
+        proj_matrices: list[Float32[np.ndarray, "3 4"]] = [exo_cam.projection_matrix for exo_cam in exo_cam_list]
+        proj_matrices: Float32[np.ndarray, "num_views 3 4"] = np.stack(proj_matrices, axis=0).astype(np.float32)
+
+        proj_matrices_filtered: list[Float32[np.ndarray, "3 4"]] = [
+            exo_cam.projection_matrix for exo_cam in exo_cam_list if exo_cam.name in center_xyc_dict
+        ]
+        proj_matrices_filtered: Float32[np.ndarray, "num_views 3 4"] = np.stack(proj_matrices_filtered, axis=0).astype(
+            np.float32
+        )
+        xyzc: Float[np.ndarray, "n_points 4"] = batch_triangulate(
+            keypoints_2d=centers_xyc, projection_matrices=proj_matrices_filtered
+        )
+        rec.log(
+            f"{log_paths['parent_log_path']}/triangulated", rr.Points3D(xyzc[:, 0:3], colors=(0, 0, 255), radii=0.02)
+        )
+
+        projected_xyc = projectN3(
+            xyzc,
+            proj_matrices,
+        )
+
+        for rgb, cam_log_path, xyc in zip(rgb_list, log_paths["cam_log_path_list"], projected_xyc, strict=True):
+            pinhole_log_path: Path = cam_log_path / "pinhole"
+            xy = xyc[:, 0:2]
+            rec.log(
+                f"{pinhole_log_path}/video/bbox_center",
+                rr.Points2D(positions=xy, colors=(0, 0, 255), radii=5),
+            )
+            IMG_SAM_PREDICTOR.set_image(rgb)
+            labels: Int[np.ndarray, "num_points"] = np.ones(len(xyc), dtype=np.int32)
+            with torch.inference_mode():
+                masks, scores, _ = IMG_SAM_PREDICTOR.predict(
+                    point_coords=xy,
+                    point_labels=labels,
+                    multimask_output=False,
+                )
+                masks: Bool[np.ndarray, "1 h w"] = masks > 0.0
+
+            rec.log(
+                f"{pinhole_log_path}/segmentation",
+                rr.SegmentationImage(masks[0].astype(np.uint8)),
+            )
+            if masks[0].any():
+                y_min, y_max = np.where(masks[0].any(axis=1))[0][[0, -1]]
+                x_min, x_max = np.where(masks[0].any(axis=0))[0][[0, -1]]
+                bbox = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
+                rec.log(
+                    f"{pinhole_log_path}/video/bbox",
+                    rr.Boxes2D(array=bbox, array_format=rr.Box2DFormat.XYXY, colors=(0, 0, 255)),
+                )
+
+                # Calculate the center of the bounding box
+                center_xyc: Float32[np.ndarray, "3"] = np.array(
+                    [(x_min + x_max) / 2, (y_min + y_max) / 2, 1], dtype=np.float32
+                )
+                rec.log(
+                    f"{pinhole_log_path}/video/bbox_center",
+                    rr.Points2D(positions=(center_xyc[0], center_xyc[1]), colors=(0, 0, 255), radii=5),
+                )
+            IMG_SAM_PREDICTOR.reset_predictor()
+
+    else:
+        rec.log(
+            "logs",
+            rr.TextLog("No points selected, skipping segmentation.", level="info"),
+        )
+        gr.Info("Not enough points to triangulate.")
+    yield stream.read()
 
 
 def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
@@ -566,17 +485,28 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
     parent_log_path: Path = Path("world")
     timeline_name: str = "frame_idx"
 
-    exo_video_readers: MultiVideoReader = sequence.exo_video_readers
-    exo_video_files: list[Path] = exo_video_readers.video_paths
-    exo_cam_log_paths: list[Path] = [parent_log_path / exo_cam.name for exo_cam in sequence.exo_cam_list]
-    exo_video_log_paths: list[Path] = [cam_log_paths / "pinhole" / "video" for cam_log_paths in exo_cam_log_paths]
+    images_to_log: int = 4
 
-    initial_blueprint = create_exoego_blueprint(exo_video_log_paths, num_videos_to_log=8)
+    exo_video_readers: MultiVideoReader = sequence.exo_video_readers
+    # exo_video_files: list[Path] = exo_video_readers.video_paths[0:images_to_log]
+    exo_cam_log_paths: list[Path] = [parent_log_path / exo_cam.name for exo_cam in sequence.exo_cam_list][
+        0:images_to_log
+    ]
+    exo_video_log_paths: list[Path] = [cam_log_paths / "pinhole" / "video" for cam_log_paths in exo_cam_log_paths][
+        0:images_to_log
+    ]
+
+    initial_blueprint = create_blueprint(exo_video_log_paths, num_videos_to_log=4)
     rec.send_blueprint(initial_blueprint)
+
+    bgr_list: list[UInt8[np.ndarray, "h w 3"]] = exo_video_readers[0][0:images_to_log]
+    rgb_list: list[UInt8[np.ndarray, "h w 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
+    depth_paths: dict[ExoCameraIDs, Path] = sequence.depth_paths[0]
+    exo_cam_list: list[PinholeParameters] = sequence.exo_cam_list[0:images_to_log]
 
     cam_log_path_list: list[Path] = []
     # log stationary exo cameras and video assets
-    for exo_cam in sequence.exo_cam_list:
+    for exo_cam in exo_cam_list:
         cam_log_path: Path = parent_log_path / exo_cam.name
         cam_log_path_list.append(cam_log_path)
         image_plane_distance: float = 0.1
@@ -588,31 +518,32 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
             static=True,
         )
 
+    for rgb, cam_log_path in zip(rgb_list, cam_log_path_list, strict=True):
+        pinhole_log_path: Path = cam_log_path / "pinhole"
+        depth_path: Path = depth_paths[cam_log_path.name]
+        # depth_image: UInt16[np.ndarray, "480 640"] = cv2.imread(str(depth_path), cv2.IMREAD_ANYDEPTH)
+        rec.log(f"{pinhole_log_path}/video", rr.Image(rgb, color_model=rr.ColorModel.RGB), static=True)
+        # rec.log(f"{pinhole_log_path}/depth", rr.DepthImage(depth_image, meter=1000))
+
     log_paths = RerunLogPaths(
         timeline_name=timeline_name,
         parent_log_path=parent_log_path,
         cam_log_path_list=cam_log_path_list,
     )
 
-    all_timestamps: list[Int[np.ndarray, "num_frames"]] = []  # noqa: UP037
-    for video_file, video_log_path in zip(exo_video_files, exo_video_log_paths, strict=True):
-        assert video_file.suffix == ".mp4", f"Video file {video_file} is not an mp4."
-        # Log video asset which is referred to by frame references.
-        frame_timestamps_ns: Int[np.ndarray, "num_frames"] = log_video_rec(  # noqa: UP037
-            rec=rec,
-            video_path=video_file,
-            video_log_path=video_log_path,
-            timeline=log_paths["timeline_name"],
-        )
-        all_timestamps.append(frame_timestamps_ns)
+    mv_keypoint_dict: dict[str, KeypointsContainer] = {
+        cam_log_path.name: KeypointsContainer.empty() for cam_log_path in cam_log_path_list
+    }
 
-    yield stream.read(), recording_id, log_paths
+    yield stream.read(), recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list
 
 
 with gr.Blocks() as mv_sam_block:
-    keypoints = gr.State(KeypointsContainer.empty())
+    mv_keypoint_dict: dict[str, KeypointsContainer] = gr.State({})
     inference_state = gr.State({})
-    frames_dir = gr.State(Path())
+    rgb_list = gr.State()
+    exo_cam_list: list[PinholeParameters] = gr.State([])
+    centers_xyc_dict: dict[str, Float32[np.ndarray, "3"]] = gr.State({})
     with gr.Row():
         with gr.Column(scale=1):
             dataset_dropdown = gr.Dropdown(
@@ -630,6 +561,7 @@ with gr.Blocks() as mv_sam_block:
             )
             clear_points_btn = gr.Button("Clear Points", scale=1)
             get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
+            triangulate_btn = gr.Button("Triangulate Center", scale=1)
             propagate_mask_btn = gr.Button("Propagate Mask", scale=1)
             stop_propagation_btn = gr.Button("Stop Propagation", scale=1)
 
@@ -648,21 +580,10 @@ with gr.Blocks() as mv_sam_block:
     recording_id = gr.State()
     log_paths = gr.State({})
 
-    # input_components = InputComponents(
-    #     video_file=video_in,
-    # )
-
-    # triggered on video upload
-    # video_in.upload(
-    #     fn=preprocess_video,
-    #     inputs=input_components.to_list(),
-    #     outputs=[video_in_drawer, viewer, inference_state, frames_dir, recording_id, log_paths],
-    # )
-
     load_dataset_btn.click(
         fn=log_dataset,
         inputs=[dataset_dropdown],
-        outputs=[viewer, recording_id, log_paths],
+        outputs=[viewer, recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list],
     )
 
     viewer.selection_change(
@@ -670,33 +591,26 @@ with gr.Blocks() as mv_sam_block:
         inputs=[
             recording_id,
             point_type,
-            keypoints,
+            mv_keypoint_dict,
             log_paths,
         ],
-        outputs=[viewer, keypoints],
+        outputs=[viewer, mv_keypoint_dict],
     )
 
-    # clear_points_btn.click(
-    #     fn=reset_keypoints,
-    #     inputs=[recording_id, keypoints, log_paths],
-    #     outputs=[viewer, keypoints],
-    # )
+    clear_points_btn.click(
+        fn=reset_keypoints,
+        inputs=[recording_id, mv_keypoint_dict, log_paths],
+        outputs=[viewer, mv_keypoint_dict, centers_xyc_dict],
+    )
 
-    # get_initial_mask_btn.click(
-    #     fn=get_initial_mask,
-    #     inputs=[recording_id, inference_state, keypoints, log_paths],
-    #     outputs=[viewer],
-    # )
+    get_initial_mask_btn.click(
+        fn=get_initial_mask,
+        inputs=[recording_id, inference_state, mv_keypoint_dict, log_paths, rgb_list, centers_xyc_dict],
+        outputs=[viewer, centers_xyc_dict],
+    )
 
-    # propagate_event = propagate_mask_btn.click(
-    #     fn=propagate_mask,
-    #     inputs=[recording_id, inference_state, keypoints, frames_dir, log_paths],
-    #     outputs=[viewer],
-    # )
-
-    # stop_propagation_btn.click(
-    #     fn=lambda: None,
-    #     inputs=[],
-    #     outputs=[],
-    #     cancels=[propagate_event],
-    # )
+    triangulate_btn.click(
+        fn=triangulate_centers,
+        inputs=[recording_id, centers_xyc_dict, exo_cam_list, log_paths, rgb_list],
+        outputs=[viewer],
+    )

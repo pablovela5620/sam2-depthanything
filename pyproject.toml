@@ -65,6 +65,17 @@ cmd = """
 outputs = ["data/hocap/sample.zip", "data/hocap/sample"]
 description = "Downloads and extracts an example polycam dataset from huggingface, this may take a while"
 
+[tool.pixi.tasks._download-assembly101-sample]
+cmd = """
+test -e data/assembly101-sample \
+  || (huggingface-cli download pablovela5620/Assembly101-Sample \
+    --repo-type dataset \
+    --include "assembly101-sample/**" \
+    --local-dir data/)
+"""
+outputs = ["data/assembly101-sample"]
+description = "Downloads an example assembly101 dataset from huggingface"
+
 # [tool.pixi.feature.spaces.tasks.app]
 # cmd = """
 #     python gradio_app.py
