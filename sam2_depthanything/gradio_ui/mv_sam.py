@@ -1,12 +1,12 @@
-import tempfile
 import uuid
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, assert_never
 
 import cv2
 import gradio as gr
 import numpy as np
+import open3d as o3d
 import rerun as rr
 import rerun.blueprint as rrb
 import torch
@@ -17,49 +17,57 @@ from gradio_rerun.events import (
 )
 from icecream import ic
 from jaxtyping import Bool, Float, Float32, Int, UInt8, UInt16
-from monopriors.depth_utils import clip_disparity, depth_edges_mask, depth_to_points
-from monopriors.relative_depth_models.depth_anything_v2 import (
-    DepthAnythingV2Predictor,
-)
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from simplecv.camera_parameters import PinholeParameters
+from simplecv.data.exoego.assembly_101 import Assembely101Sequence
 from simplecv.data.exoego.hocap import ExoCameraIDs, HOCapSequence
 from simplecv.ops.triangulate import batch_triangulate, projectN3
+from simplecv.ops.tsdf_depth_fuser import Open3DFuser
 from simplecv.video_io import MultiVideoReader
-
-# from sam2_depthanything.op import create_blueprint
 
 if gr.NO_RELOAD:
     VIDEO_SAM_PREDICTOR: SAM2VideoPredictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-tiny")
     IMG_SAM_PREDICTOR: SAM2ImagePredictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-tiny")
-    DEPTH_PREDICTOR = DepthAnythingV2Predictor(device="cpu", encoder="vits")
-    DEPTH_PREDICTOR.set_model_device("cuda")
 
 
 def create_blueprint(exo_video_log_paths: list[Path], num_videos_to_log: Literal[4, 8] = 8) -> rrb.Blueprint:
-    main_view = rrb.Horizontal(
+    active_tab: int = 0  # 0 for video, 1 for images
+    main_view = rrb.Vertical(
         contents=[
-            rrb.Vertical(
-                contents=[
-                    rrb.Horizontal(
-                        contents=[
-                            rrb.Spatial2DView(origin=f"{video_log_path.parent}"),
-                            # rrb.Spatial2DView(origin=f"{video_log_path}".replace("video", "depth")),
-                        ]
-                    )
-                    for video_log_path in exo_video_log_paths
-                ]
-            ),
             rrb.Spatial3DView(
                 origin="/",
             ),
             # take the first 4 video files
+            rrb.Horizontal(
+                contents=[
+                    rrb.Tabs(
+                        rrb.Spatial2DView(origin=f"{video_log_path.parent}"),
+                        rrb.Spatial2DView(
+                            origin=f"{video_log_path}".replace("video", "depth"),
+                        ),
+                        active_tab=active_tab,
+                    )
+                    for video_log_path in exo_video_log_paths[:4]
+                ]
+            ),
         ],
-        column_shares=[2, 5],
+        row_shares=[3, 1],
+    )
+    additional_views = rrb.Vertical(
+        contents=[
+            rrb.Tabs(
+                rrb.Spatial2DView(origin=f"{video_log_path.parent}"),
+                rrb.Spatial2DView(origin=f"{video_log_path}".replace("video", "depth")),
+                active_tab=active_tab,
+            )
+            for video_log_path in exo_video_log_paths[4:]
+        ]
     )
     # do the last 4 videos
     contents = [main_view]
+    if num_videos_to_log == 8:
+        contents.append(additional_views)
 
     blueprint = rrb.Blueprint(
         rrb.Horizontal(
@@ -305,6 +313,11 @@ def reset_keypoints(
             rr.Clear(recursive=True),
         )
 
+    rec.log(
+        f"{log_paths['parent_log_path']}/triangulated",
+        rr.Clear(recursive=True),
+    )
+
     # Ensure we consume everything from the recording.
     stream.flush()
     yield stream.read(), mv_keypoint_dict, {}
@@ -407,7 +420,7 @@ def triangulate_centers(
             keypoints_2d=centers_xyc, projection_matrices=proj_matrices_filtered
         )
         rec.log(
-            f"{log_paths['parent_log_path']}/triangulated", rr.Points3D(xyzc[:, 0:3], colors=(0, 0, 255), radii=0.02)
+            f"{log_paths['parent_log_path']}/triangulated", rr.Points3D(xyzc[:, 0:3], colors=(0, 0, 255), radii=0.1)
         )
 
         projected_xyc = projectN3(
@@ -478,14 +491,20 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
                 load_labels=False,
             )
         case "assembly101":
-            raise gr.Error("Assembly101 dataset is not supported yet.")
+            # raise NotImplementedError("Assembly101 is not implemented yet.")
+            sequence: Assembely101Sequence = Assembely101Sequence(
+                data_path=Path("data/assembly101-sample"),
+                sequence_name="nusar-2021_action_both_9015-b05b_9015_user_id_2021-02-02_161800",
+                subject_id=None,
+                load_labels=False,
+            )
         case _:
             assert_never(dataset_name)
 
     parent_log_path: Path = Path("world")
     timeline_name: str = "frame_idx"
 
-    images_to_log: int = 4
+    images_to_log: int = 8
 
     exo_video_readers: MultiVideoReader = sequence.exo_video_readers
     # exo_video_files: list[Path] = exo_video_readers.video_paths[0:images_to_log]
@@ -496,20 +515,26 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
         0:images_to_log
     ]
 
-    initial_blueprint = create_blueprint(exo_video_log_paths, num_videos_to_log=4)
+    initial_blueprint = create_blueprint(exo_video_log_paths, num_videos_to_log=8)
     rec.send_blueprint(initial_blueprint)
+    rec.log("/", sequence.world_coordinate_system, static=True)
 
     bgr_list: list[UInt8[np.ndarray, "h w 3"]] = exo_video_readers[0][0:images_to_log]
     rgb_list: list[UInt8[np.ndarray, "h w 3"]] = [cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB) for bgr in bgr_list]
-    depth_paths: dict[ExoCameraIDs, Path] = sequence.depth_paths[0]
+    # check if depth images exist
+    if not sequence.depth_paths:
+        depth_paths = None
+    else:
+        depth_paths: dict[ExoCameraIDs, Path] = sequence.depth_paths[0]
     exo_cam_list: list[PinholeParameters] = sequence.exo_cam_list[0:images_to_log]
 
     cam_log_path_list: list[Path] = []
+    fuser = Open3DFuser(fusion_resolution=0.01, max_fusion_depth=1.25)
     # log stationary exo cameras and video assets
     for exo_cam in exo_cam_list:
         cam_log_path: Path = parent_log_path / exo_cam.name
         cam_log_path_list.append(cam_log_path)
-        image_plane_distance: float = 0.1
+        image_plane_distance: float = 0.1 if dataset_name == "hocap" else 100.0
         log_pinhole_rec(
             rec=rec,
             camera=exo_cam,
@@ -518,12 +543,34 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
             static=True,
         )
 
-    for rgb, cam_log_path in zip(rgb_list, cam_log_path_list, strict=True):
+    for rgb, cam_log_path, exo_cam in zip(rgb_list, cam_log_path_list, exo_cam_list, strict=True):
         pinhole_log_path: Path = cam_log_path / "pinhole"
-        depth_path: Path = depth_paths[cam_log_path.name]
-        # depth_image: UInt16[np.ndarray, "480 640"] = cv2.imread(str(depth_path), cv2.IMREAD_ANYDEPTH)
         rec.log(f"{pinhole_log_path}/video", rr.Image(rgb, color_model=rr.ColorModel.RGB), static=True)
         # rec.log(f"{pinhole_log_path}/depth", rr.DepthImage(depth_image, meter=1000))
+        if depth_paths is not None:
+            depth_path: Path = depth_paths[cam_log_path.name]
+            depth_image: UInt16[np.ndarray, "480 640"] = cv2.imread(str(depth_path), cv2.IMREAD_ANYDEPTH)
+            fuser.fuse_frames(
+                depth_image,
+                exo_cam.intrinsics.k_matrix,
+                exo_cam.extrinsics.cam_T_world,
+                rgb,
+            )
+
+    if depth_paths is not None:
+        mesh: o3d.geometry.TriangleMesh = fuser.get_mesh()
+        mesh.compute_vertex_normals()
+
+        rec.log(
+            f"{parent_log_path}/mesh",
+            rr.Mesh3D(
+                vertex_positions=mesh.vertices,
+                triangle_indices=mesh.triangles,
+                vertex_normals=mesh.vertex_normals,
+                vertex_colors=mesh.vertex_colors,
+            ),
+            static=True,
+        )
 
     log_paths = RerunLogPaths(
         timeline_name=timeline_name,
@@ -538,6 +585,13 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
     yield stream.read(), recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list
 
 
+def handle_export():
+    # Add your actual export logic here if needed
+    print("Export button clicked - switching tab.")
+    # Return an update to select the 'Output' tab (which has id=1)
+    return gr.Tabs(selected=1)
+
+
 with gr.Blocks() as mv_sam_block:
     mv_keypoint_dict: dict[str, KeypointsContainer] = gr.State({})
     inference_state = gr.State({})
@@ -545,26 +599,28 @@ with gr.Blocks() as mv_sam_block:
     exo_cam_list: list[PinholeParameters] = gr.State([])
     centers_xyc_dict: dict[str, Float32[np.ndarray, "3"]] = gr.State({})
     with gr.Row():
-        with gr.Column(scale=1):
-            dataset_dropdown = gr.Dropdown(
-                label="Dataset",
-                choices=["hocap", "assembly101"],
-                value="hocap",
-            )
-            load_dataset_btn = gr.Button("Load Dataset")
+        with gr.Tabs() as main_tabs:
+            with gr.TabItem("Controls", id=0):
+                with gr.Column(scale=1):
+                    dataset_dropdown = gr.Dropdown(
+                        label="Dataset",
+                        choices=["hocap", "assembly101"],
+                        value="hocap",
+                    )
+                    load_dataset_btn = gr.Button("Load Dataset")
 
-            point_type = gr.Radio(
-                label="point type",
-                choices=["include", "exclude"],
-                value="include",
-                scale=1,
-            )
-            clear_points_btn = gr.Button("Clear Points", scale=1)
-            get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
-            triangulate_btn = gr.Button("Triangulate Center", scale=1)
-            propagate_mask_btn = gr.Button("Propagate Mask", scale=1)
-            stop_propagation_btn = gr.Button("Stop Propagation", scale=1)
-
+                    point_type = gr.Radio(
+                        label="point type",
+                        choices=["include", "exclude"],
+                        value="include",
+                        scale=1,
+                    )
+                    clear_points_btn = gr.Button("Clear Points", scale=1)
+                    get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
+                    triangulate_btn = gr.Button("Triangulate Center", scale=1)
+                    # export_btn = gr.Button("Export", scale=1)
+            with gr.TabItem("Output", id=1):
+                gr.Markdown("here you can see the output of the selected video")
         with gr.Column(scale=4):
             viewer = Rerun(
                 streaming=True,
@@ -614,3 +670,9 @@ with gr.Blocks() as mv_sam_block:
         inputs=[recording_id, centers_xyc_dict, exo_cam_list, log_paths, rgb_list],
         outputs=[viewer],
     )
+    # TODO export masks + ply + camera poses for use with brush
+    # export_btn.click(
+    #     fn=handle_export,
+    #     inputs=[],
+    #     outputs=[main_tabs],
+    # )
