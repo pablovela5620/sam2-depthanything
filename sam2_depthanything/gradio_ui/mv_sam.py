@@ -1,3 +1,4 @@
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from jaxtyping import Bool, Float, Float32, Int, UInt8, UInt16
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from simplecv.camera_parameters import PinholeParameters
+from simplecv.conversion_utils import save_to_nerfstudio
 from simplecv.data.exoego.assembly_101 import Assembely101Sequence
 from simplecv.data.exoego.hocap import ExoCameraIDs, HOCapSequence
 from simplecv.ops.triangulate import batch_triangulate, projectN3
@@ -250,7 +252,7 @@ def update_keypoints(
 
 
 def get_recording(recording_id) -> rr.RecordingStream:
-    return rr.RecordingStream(application_id="rerun_vggt_sam", recording_id=recording_id)
+    return rr.RecordingStream(application_id="multiview_sam_annotate", recording_id=recording_id)
 
 
 def rescale_img(img_hw3: UInt8[np.ndarray, "h w 3"], max_dim: int) -> UInt8[np.ndarray, "... 3"]:
@@ -387,7 +389,6 @@ def get_initial_mask(
                 keypoint_centers_dict[cam_name] = center_xyc
             IMG_SAM_PREDICTOR.reset_predictor()
 
-        ic(keypoint_centers_dict)
         yield stream.read(), keypoint_centers_dict
 
 
@@ -400,6 +401,8 @@ def triangulate_centers(
 ):
     rec = get_recording(recording_id)
     stream = rec.binary_stream()
+
+    masks_list: list[UInt8[np.ndarray, "h w"]] = []
 
     rec.set_time_nanos(log_paths["timeline_name"], nanos=0)
     if len(center_xyc_dict) >= 2:
@@ -445,11 +448,13 @@ def triangulate_centers(
                 )
                 masks: Bool[np.ndarray, "1 h w"] = masks > 0.0
 
+            mask = masks[0].astype(np.uint8)
+            masks_list.append(mask)
             rec.log(
                 f"{pinhole_log_path}/segmentation",
-                rr.SegmentationImage(masks[0].astype(np.uint8)),
+                rr.SegmentationImage(mask),
             )
-            if masks[0].any():
+            if mask.any():
                 y_min, y_max = np.where(masks[0].any(axis=1))[0][[0, -1]]
                 x_min, x_max = np.where(masks[0].any(axis=0))[0][[0, -1]]
                 bbox = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
@@ -474,7 +479,7 @@ def triangulate_centers(
             rr.TextLog("No points selected, skipping segmentation.", level="info"),
         )
         gr.Info("Not enough points to triangulate.")
-    yield stream.read()
+    yield stream.read(), masks_list
 
 
 def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
@@ -572,6 +577,10 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
             static=True,
         )
 
+        pcd: o3d.geometry.PointCloud = mesh.sample_points_poisson_disk(
+            number_of_points=20_000,
+        )
+
     log_paths = RerunLogPaths(
         timeline_name=timeline_name,
         parent_log_path=parent_log_path,
@@ -582,21 +591,41 @@ def log_dataset(dataset_name: Literal["hocap", "assembly101"]):
         cam_log_path.name: KeypointsContainer.empty() for cam_log_path in cam_log_path_list
     }
 
-    yield stream.read(), recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list
+    yield stream.read(), recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list, pcd
 
 
-def handle_export():
-    # Add your actual export logic here if needed
-    print("Export button clicked - switching tab.")
-    # Return an update to select the 'Output' tab (which has id=1)
-    return gr.Tabs(selected=1)
+def handle_export(
+    exo_cam_list: list[PinholeParameters],
+    rgb_list: list[UInt8[np.ndarray, "h w 3"]],
+    masks_list: list[UInt8[np.ndarray, "h w"]],
+    pointcloud: o3d.geometry.PointCloud,
+):
+    bgr_list: list[UInt8[np.ndarray, "h w 3"]] = [cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR) for rgb in rgb_list]
+    ns_save_dir: Path = Path("data/nerfstudio-export")
+    masks_list: list[UInt8[np.ndarray, "h w"]] | None = masks_list if len(masks_list) > 0 else None
+    save_to_nerfstudio(
+        ns_save_path=ns_save_dir,
+        pinhole_param_list=exo_cam_list,
+        bgr_list=bgr_list,
+        pointcloud=pointcloud,
+        masks_list=masks_list,
+    )
+
+    # Define the path for the output zip file
+    zip_output_path = Path("data/nerfstudio-output")
+    zip_file_path: str = shutil.make_archive(str(zip_output_path), "zip", str(ns_save_dir))
+
+    # Return the path to the zip file and switch tabs
+    return gr.Tabs(selected=1), zip_file_path
 
 
 with gr.Blocks() as mv_sam_block:
     mv_keypoint_dict: dict[str, KeypointsContainer] = gr.State({})
     inference_state = gr.State({})
     rgb_list = gr.State()
+    masks_list: list[UInt8[np.ndarray, "h w"]] = gr.State([])
     exo_cam_list: list[PinholeParameters] = gr.State([])
+    pointcloud: o3d.geometry.PointCloud = gr.State()
     centers_xyc_dict: dict[str, Float32[np.ndarray, "3"]] = gr.State({})
     with gr.Row():
         with gr.Tabs() as main_tabs:
@@ -618,9 +647,10 @@ with gr.Blocks() as mv_sam_block:
                     clear_points_btn = gr.Button("Clear Points", scale=1)
                     get_initial_mask_btn = gr.Button("Get Initial Mask", scale=1)
                     triangulate_btn = gr.Button("Triangulate Center", scale=1)
-                    # export_btn = gr.Button("Export", scale=1)
+                    export_btn = gr.Button("Export", scale=1)
             with gr.TabItem("Output", id=1):
                 gr.Markdown("here you can see the output of the selected video")
+                output_zip = gr.File(label="Exported Zip File", file_count="single", type="filepath")
         with gr.Column(scale=4):
             viewer = Rerun(
                 streaming=True,
@@ -639,7 +669,7 @@ with gr.Blocks() as mv_sam_block:
     load_dataset_btn.click(
         fn=log_dataset,
         inputs=[dataset_dropdown],
-        outputs=[viewer, recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list],
+        outputs=[viewer, recording_id, log_paths, mv_keypoint_dict, rgb_list, exo_cam_list, pointcloud],
     )
 
     viewer.selection_change(
@@ -668,11 +698,11 @@ with gr.Blocks() as mv_sam_block:
     triangulate_btn.click(
         fn=triangulate_centers,
         inputs=[recording_id, centers_xyc_dict, exo_cam_list, log_paths, rgb_list],
-        outputs=[viewer],
+        outputs=[viewer, masks_list],
     )
     # TODO export masks + ply + camera poses for use with brush
-    # export_btn.click(
-    #     fn=handle_export,
-    #     inputs=[],
-    #     outputs=[main_tabs],
-    # )
+    export_btn.click(
+        fn=handle_export,
+        inputs=[exo_cam_list, rgb_list, masks_list, pointcloud],
+        outputs=[main_tabs, output_zip],
+    )
