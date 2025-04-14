@@ -94,10 +94,10 @@ torchcodec = { version = ">=0.2.1", index = "https://download.pytorch.org/whl/ni
 xformers = { git = "https://github.com/facebookresearch/xformers.git", rev = "main" }
 vggt = { git = "https://github.com/facebookresearch/vggt.git", rev = "f8bf73ac25d5089cca2d6540a185697087fa2255" }
 monopriors = { git = "https://github.com/pablovela5620/monoprior.git", rev = "90fe03ab3a4ee1b8df542d5b8638bf034d933757" }
-# gradio-rerun = { path = "/home/pablo/0Dev/work/rerun-projects/gradio-rerun-backbup/dist/gradio_rerun-0.0.8-py3-none-any.whl" }
+# gradio-rerun = { path = "/home/pablo/0Dev/personal/sam2-depthanything/gr-dist/gradio_rerun-0.0.8-py3-none-any.whl" }
 gradio-rerun = { url = "https://huggingface.co/datasets/pablovela5620/gradio-rr-0.23/resolve/main/gradio_rerun-0.0.8-py3-none-any.whl" }
 rerun-sdk = { url = "https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl" }
-simplecv = { git = "https://github.com/pablovela5620/simplecv.git", rev = "a726de3cdf251073fc1ea7515a0a6139474f486e" }
+simplecv = { git = "https://github.com/pablovela5620/simplecv.git", rev = "b713700234ba94a1bfff086951bd0b1b63ffae89" }
 
 
 [tool.pixi.dependencies]
