@@ -506,14 +506,14 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/45/58/38b5afbc1a800eeea951b9285d3912613f2603bdf897a4ab0f4bd7f405fc/python_multipart-0.0.20-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/82/ff/5701f79317a1a03e5ee8a1bf48e7273a8445162a2774e51fc06411a67c89/pytorch_lightning-2.5.1-py3-none-any.whl
       - pypi: https://download.pytorch.org/whl/nightly/pytorch_triton-3.3.0%2Bgit96316ce5-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      - pypi: direct+https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl
+      - pypi: direct+https://files.pythonhosted.org/packages/41/9c/9b50e57e1ef2ece7ae5d409ae5c68fce1942b49528b5bb7ad675748c8748/rerun_sdk-0.23.0a2-cp38-abi3-manylinux_2_31_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/63/80/734d3d17546e47ff99871f44ea7540ad2bbd7a480ed197fe8a1c8a261075/ruff-0.11.4-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/4d/c0/1108ad9f01567f66b3154063605b350b69c3c9366732e09e45f9fd0d1deb/safehttpx-0.1.6-py3-none-any.whl
       - pypi: git+https://github.com/facebookresearch/segment-anything-2.git?rev=2b90b9f5ceec907a1c18123530e92e794ad901a4#2b90b9f5ceec907a1c18123530e92e794ad901a4
       - pypi: https://files.pythonhosted.org/packages/6a/23/8146aad7d88f4fcb3a6218f41a60f6c2d4e3a72de72da1825dc7c8f7877c/semantic_version-2.10.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/e2/d1/a1d3189e7873408b9dc396aef0d7926c198b0df2aa3ddb5b539d3e89a70f/shtab-1.7.1-py3-none-any.whl
-      - pypi: git+https://github.com/pablovela5620/simplecv.git?rev=b713700234ba94a1bfff086951bd0b1b63ffae89#b713700234ba94a1bfff086951bd0b1b63ffae89
+      - pypi: git+https://github.com/pablovela5620/simplecv.git?rev=b2d52451ec5702f54ca6bcbf59ae39dccb189e8a#b2d52451ec5702f54ca6bcbf59ae39dccb189e8a
       - pypi: https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/4b/528ccf7a982216885a1ff4908e886b8fb5f19862d1962f56a3fce2435a70/starlette-0.46.1-py3-none-any.whl
       - pypi: https://download.pytorch.org/whl/nightly/sympy-1.13.3-py3-none-any.whl
@@ -6430,9 +6430,9 @@ packages:
   - pkg:pypi/requests?source=hash-mapping
   size: 58723
   timestamp: 1733217126197
-- pypi: direct+https://github.com/rerun-io/rerun/releases/download/prerelease/rerun_sdk-0.23.0a1+dev-cp38-abi3-manylinux_2_31_x86_64.whl
+- pypi: direct+https://files.pythonhosted.org/packages/41/9c/9b50e57e1ef2ece7ae5d409ae5c68fce1942b49528b5bb7ad675748c8748/rerun_sdk-0.23.0a2-cp38-abi3-manylinux_2_31_x86_64.whl
   name: rerun-sdk
-  version: 0.23.0a1+dev
+  version: 0.23.0a2
   requires_dist:
   - attrs>=23.1.0
   - numpy>=1.23
@@ -6440,7 +6440,7 @@ packages:
   - pyarrow>=14.0.2
   - typing-extensions>=4.5
   - pytest==7.1.2 ; extra == 'tests'
-  - rerun-notebook==0.23.0a1+dev ; extra == 'notebook'
+  - rerun-notebook==0.23.0a2 ; extra == 'notebook'
   requires_python: '>=3.9'
 - conda: https://conda.anaconda.org/conda-forge/noarch/retrying-1.3.4-pyhd8ed1ab_0.conda
   sha256: ff6c87f47b06725e34a6c7916e13a922090d586df6fd245b6cfd928ac0840dd1
@@ -6549,7 +6549,7 @@ packages:
 - pypi: .
   name: sam2-depthanything
   version: 0.1.0
-  sha256: bb644b8d9c9da710c85211b800a313412010412f77b049bba12f21477a285faf
+  sha256: bb1a1c64bd81123f4e16f27f0383103319e597d2c08e3248677d5685af3529f1
   requires_dist:
   - mmcv-lite>=2.2.0,<2.3
   - build>=1.2.1,<2
@@ -6641,7 +6641,7 @@ packages:
   - pytest-cov ; extra == 'dev'
   - pytest-timeout ; extra == 'dev'
   requires_python: '>=3.7'
-- pypi: git+https://github.com/pablovela5620/simplecv.git?rev=b713700234ba94a1bfff086951bd0b1b63ffae89#b713700234ba94a1bfff086951bd0b1b63ffae89
+- pypi: git+https://github.com/pablovela5620/simplecv.git?rev=b2d52451ec5702f54ca6bcbf59ae39dccb189e8a#b2d52451ec5702f54ca6bcbf59ae39dccb189e8a
   name: simplecv
   version: 0.3.1
   requires_dist:
@@ -7450,7 +7450,7 @@ packages:
   timestamp: 1718844051451
 - pypi: git+https://github.com/facebookresearch/xformers.git?rev=main#c5c0720c0c628539affbcd5332ccc18f813ccafd
   name: xformers
-  version: 0.0.30+c5c0720.d20250410
+  version: 0.0.30+c5c0720.d20250411
   requires_dist:
   - torch>=2.6
   - numpy
